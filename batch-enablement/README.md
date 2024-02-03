@@ -1,6 +1,6 @@
 # VMware Batch Enablement Script
 
-This PowerShell script, `arcvmware-batch-enablement.ps1`, is designed to enable Virtual Machines (VMs) in a vCenter in batch. It's particularly useful for large-scale operations where you need to manage hundreds or thousands of VMs.
+This PowerShell script, [`arcvmware-batch-enablement.ps1`](./arcvmware-batch-enablement.ps1), is designed to enable Virtual Machines (VMs) in a vCenter in batch. It's particularly useful for large-scale operations where you need to manage hundreds or thousands of VMs.
 
 ## Features
 
