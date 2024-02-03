@@ -1,9 +1,11 @@
 <#
 .SYNOPSIS
-This is a helper script for enabling VMs in a vCenter in batch. It will enable 200 VMs per ARM deployment if guest management is opted for, else 400 VMs per ARM deployment. The script will create the following files:
+This is a helper script for enabling VMs in a vCenter in batch. The script will create the following files:
   vmware-batch.log - log file
   all-deployments-<timestamp>.txt - list of Azure portal links to all deployments created
   vmw-dep-<timestamp>-<batch>.json - ARM deployment files
+
+In a single ARM deployment, the script can enable up to 200 VMs if guest management is enabled, else 400 VMs. If there are more than 200 VMs (or 400 VMs if guest management is not enabled), the script will create multiple ARM deployments.
 
 **There are some lines which are marked with NOTE. Please read the comments and modify the script accordingly. It is recommended to run the script with the DryRun switch first to ensure that the deployments are created as expected.**
 
@@ -120,7 +122,7 @@ $VMtpl = @'
           "apiVersion": "2023-03-15-preview",
           "name": "{{vmName}}",
           "kind": "VMware",
-          "location": "eastus2euap",
+          "location": "{{location}}",
           "properties": {}
         },
         {
@@ -167,7 +169,7 @@ $GMtpl = @'
           "apiVersion": "2023-03-15-preview",
           "name": "{{vmName}}",
           "kind": "VMware",
-          "location": "eastus2euap",
+          "location": "{{location}}",
           "properties": {},
           "identity": {
             "type": "SystemAssigned"
@@ -244,13 +246,16 @@ if ($resInfo.Type -ne "VCenters") {
   exit
 }
 
-$customLocationId = az connectedvmware vcenter show --resource-group $resourceGroupName --name $vCenterName --query 'extendedLocation.name' -o tsv
+$vcenterProps = az connectedvmware vcenter show --resource-group $resourceGroupName --name $vCenterName --query '{clId: extendedLocation.name, location:location}' -o json | ConvertFrom-Json
+$customLocationId = $vcenterProps.clId
 if (!$customLocationId) {
   LogError "Failed to extract custom location id from vCenter $vCenterName"
   exit
 }
+$location = $vcenterProps.location
 
 LogText "Extracted custom location: $customLocationId"
+LogText "Extracted location: $location"
 
 $vmInventoryList = az connectedvmware vcenter inventory-item list --resource-group $resourceGroupName --vcenter $vCenterName --query '[?kind == `VirtualMachine`].{moRefId:moRefId, moName:moName, managedResourceId:managedResourceId}' -o json | ConvertFrom-Json
 
@@ -294,10 +299,13 @@ $resources = @()
 
 for ($i = 0; $i -lt $nonManagedVMs.Length; $i++) {
   $moRefId = $nonManagedVMs[$i].moRefId
+  
+  # NOTE: Modify the following line to customize the VM name.
   $vmName = normalizeMoName $nonManagedVMs[$i].moName
   $vmName += "-$moRefId"
 
   $vmResource = $VMtpl `
+    -replace "{{location}}", $location `
     -replace "{{vmName}}", $vmName `
     -replace "{{moRefId}}", $moRefId `
     -replace "{{vCenterId}}", $VCenterId `
@@ -310,6 +318,7 @@ for ($i = 0; $i -lt $nonManagedVMs.Length; $i++) {
     $password = "Password"
 
     $gmResource = $GMtpl `
+      -replace "{{location}}", $location `
       -replace "{{vmName}}", $vmName `
       -replace "{{username}}", $username `
       -replace "{{password}}", $password
