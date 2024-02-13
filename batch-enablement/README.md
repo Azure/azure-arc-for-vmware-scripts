@@ -4,13 +4,13 @@
 
 Export the vCenter inventory VMs to a CSV or JSON file. This can be done by running the script [export-vcenter-vms.ps1](./export-vcenter-vms.ps1). The readme for the script is [here](./export-vcenter-vms.md).
 
-## Step 2
-
-The exported inventory VM data (CSV or JSON) can be filtered and split into multiple files as per the requriement. For each file, we'll use a single user account to enable the VMs to Arc in Step 3. So, if you are using different user accounts, you can split the file into multiple files.
-
 ```powershell
 ./export-vcenter-vms.ps1 -VCenterId /subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter
 ```
+
+## Step 2
+
+The exported inventory VM data (CSV or JSON) can be filtered and split into multiple files as per the requriement. For each file, we'll use a single user account to enable the VMs to Arc in Step 3. So, if you are using different user accounts, you can split the file into multiple files.
 
 ## Step 3
 
