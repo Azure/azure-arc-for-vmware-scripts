@@ -434,7 +434,7 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     $deploymentFilePath = Join-Path $PSScriptRoot -ChildPath "$deploymentName.json"
 
     $deployment `
-    | ConvertTo-Json -Depth 30
+    | ConvertTo-Json -Depth 30 `
     | Out-File -FilePath $deploymentFilePath -Encoding UTF8
 
     if ($Execute) {
