@@ -17,6 +17,11 @@ The exported inventory VM data (CSV or JSON) can be filtered and split into mult
 Run the script [arcvmware-batch-enablement.ps1](./arcvmware-batch-enablement.ps1) to enable the VMs to Arc. The readme for the script is [here](./arcvmware-batch-enablement.md).
 First, you can run it in default mode to check the summary of the azure operations that will be performed. If you are satisfied with the summary, you can re-run the script with the `-Execute` switch to perform the azure operations.
 
+> [!IMPORTANT]
+> The VMInventoryFile needs to have atleast the following columns:
+> - vmName
+> - moRefId
+
 ```powershell
 ./arcvmware-batch-enablement.ps1 -VCenterId /subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter -EnableGuestManagement -VMInventoryFile vms.json
 ```

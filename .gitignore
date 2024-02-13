@@ -3,3 +3,4 @@
 **/all-deployments-*.txt
 **/.do-not-reveal-*
 **/*.log
+**/vms.*

@@ -1,6 +1,6 @@
 # Export the properties of VMs in VMware vCenter
 
-This PowerShell script, [`export-vcenter-vms.ps1`](./export-vcenter-vms.ps1), exports the properties of VMs in VMware vCenter to a CSV file, or JSON file in your current directory. To connect to the vCenter, it prefers PowerCLI, but if it's not installed, it uses govc.
+This PowerShell script, [`export-vcenter-vms.ps1`](./export-vcenter-vms.ps1), exports the properties of VMs in VMware vCenter to a CSV file, or JSON file in the same directory as the script. To connect to the vCenter, it prefers PowerCLI, but if it's not installed, it uses govc.
 
 For each VM, it exports the following properties:
 - Connection State

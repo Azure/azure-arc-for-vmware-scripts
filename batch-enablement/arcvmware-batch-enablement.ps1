@@ -31,6 +31,12 @@ The ARM ID of the vCenter where the VMs are located. For example: /subscriptions
 .PARAMETER VMInventoryFile
 The path to the VM Inventory file. This file should be generated using the export-vcenter-vms.ps1 script, and filtered as needed. The file can be in CSV or JSON format. The format will be auto-detected using the file extension. All the VMs in the file which have VMware Tools running will be enabled.
 
+.PARAMETER SubscriptionId
+The target subscription ID where the VMs will be enabled. If not specified, the script will use the subscription ID from the VCenterId.
+
+.PARAMETER ResourceGroup
+The target resource group where the VMs will be enabled. If not specified, the script will use the resource group from the VCenterId.
+
 .PARAMETER EnableGuestManagement
 If this switch is specified, the script will enable guest management on the VMs. If not specified, guest management will not be enabled.
 
@@ -46,6 +52,8 @@ param(
   [string]$VCenterId,
   [Parameter(Mandatory=$true)]
   [string]$VMInventoryFile,
+  [string]$SubscriptionId,
+  [string]$ResourceGroup,
   [switch]$EnableGuestManagement,
   [int]$VMCountPerDeployment,
   [PSCredential]$VMCredential,
@@ -271,26 +279,30 @@ if (!(az extension show --name connectedvmware -o json)) {
   exit
 }
 
-$resInfo = Get-ARMPartsFromID $VCenterId
-if (!$resInfo) {
+$vcInfo = Get-ARMPartsFromID $VCenterId
+if (!$vcInfo) {
   LogError "Invalid VCenterId: $VCenterId . Expected format: $VCenterIdFormat"
   exit
 }
 
-$subId = $resInfo.SubscriptionId
-$resourceGroupName = $resInfo.ResourceGroup
-$vCenterName = $resInfo.Name
+$vCenterName = $vcInfo.Name
+if (!$SubscriptionId) {
+  $SubscriptionId = $vcInfo.SubscriptionId
+}
+if (!$ResourceGroup) {
+  $ResourceGroup = $vcInfo.ResourceGroup
+}
 
-if ($resInfo.Provider -ne "Microsoft.ConnectedVMwarevSphere") {
+if ($vcInfo.Provider -ne "Microsoft.ConnectedVMwarevSphere") {
   LogError "Invalid VCenterId: $VCenterId . Expected format: $VCenterIdFormat"
   exit
 }
-if ($resInfo.Type -ne "VCenters") {
+if ($vcInfo.Type -ne "VCenters") {
   LogError "Invalid VCenterId: $VCenterId . Expected format: $VCenterIdFormat"
   exit
 }
 
-$vcenterProps = az connectedvmware vcenter show --resource-group $resourceGroupName --name $vCenterName --query '{clId: extendedLocation.name, location:location}' -o json | ConvertFrom-Json
+$vcenterProps = az connectedvmware vcenter show --subscription $vcInfo.SubscriptionId --resource-group $vcInfo.ResourceGroup --name $vCenterName --query '{clId: extendedLocation.name, location:location}' -o json | ConvertFrom-Json
 $customLocationId = $vcenterProps.clId
 if (!$customLocationId) {
   LogError "Failed to extract custom location id from vCenter $vCenterName"
@@ -301,7 +313,7 @@ $location = $vcenterProps.location
 LogText "Extracted custom location: $customLocationId"
 LogText "Extracted location: $location"
 
-$vmInventoryList = az connectedvmware vcenter inventory-item list --resource-group $resourceGroupName --vcenter $vCenterName --query '[?kind == `VirtualMachine`].{moRefId:moRefId, moName:moName, managedResourceId:managedResourceId}' -o json | ConvertFrom-Json
+$vmInventoryList = az connectedvmware vcenter inventory-item list --subscription $vcInfo.SubscriptionId --resource-group $vcInfo.ResourceGroup --vcenter $vCenterName --query '[?kind == `VirtualMachine`].{moRefId:moRefId, moName:moName, managedResourceId:managedResourceId}' -o json | ConvertFrom-Json
 
 $moRefId2Inv = @{}
 foreach ($vm in $vmInventoryList) {
@@ -438,13 +450,13 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     | Out-File -FilePath $deploymentFilePath -Encoding UTF8
 
     if ($Execute) {
-      $deploymentId = "/subscriptions/$subId/resourceGroups/$resourceGroupName/providers/Microsoft.Resources/deployments/$deploymentName"
+      $deploymentId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.Resources/deployments/$deploymentName"
       $deploymentUrl = "https://portal.azure.com/#resource$($deploymentId)/overview"
       Add-Content -Path $deploymentUrlsFilePath -Value $deploymentUrl
 
       LogText "(Batch $batch) Deploying $deploymentFilePath"
 
-      az deployment group create --resource-group $resourceGroupName --name $deploymentName --template-file $deploymentFilePath @deployArgs --debug *>> $azDebugLog
+      az deployment group create --subscription $SubscriptionId --resource-group $ResourceGroup --name $deploymentName --template-file $deploymentFilePath @deployArgs --debug *>> $azDebugLog
     }
     $resources = @()
 

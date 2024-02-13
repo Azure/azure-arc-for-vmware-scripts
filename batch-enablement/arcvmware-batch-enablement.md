@@ -2,12 +2,16 @@
 
 This PowerShell script, [`arcvmware-batch-enablement.ps1`](./arcvmware-batch-enablement.ps1), is designed to enable Virtual Machines (VMs) in a vCenter in batch. It's particularly useful for large-scale operations where you need to manage hundreds or thousands of VMs.
 
-# Important
-
 > [!IMPORTANT]
 > When guest management is enabled, the script saves your guest VM credential in a file `.do-not-reveal-guestvm-credential.json` in the same directory where the script is present.
 > Please ensure that you delete this file after the script has completed its execution.
 > The ARM template uses this file as the parameter to enable guest management on the VMs.
+
+> [!IMPORTANT]
+> The VMInventoryFile needs to have atleast the following columns:
+> - vmName
+> - moRefId
+
 
 ## Features
 
@@ -40,6 +44,7 @@ Replace `<vCenterId>` with the ARM ID of your vCenter.
 ## Parameters
 
 - `VCenterId`: The ARM ID of the vCenter where the VMs are located.
+- `VMInventoryFile`: The path to the file containing the VM inventory. The file should be in CSV or JSON format and contain at least the following columns: `vmName` and `moRefId`.
 - `EnableGuestManagement`: If this switch is specified, the script will enable guest management on the VMs.
 - `VMCredential`: The credentials to be used for enabling guest management on the VMs. If not specified, the script will prompt for the credentials.
 - `Execute`: If this switch is specified, the script will deploy the created ARM templates. If not specified, the script will only create the ARM templates and provide the summary.

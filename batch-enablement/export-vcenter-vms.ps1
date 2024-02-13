@@ -16,7 +16,7 @@ For each VM, it exports the following properties:
 - VM Name
 
 The script asks for the credentials interactively if they are not provided as parameters.
-The data is exported in CSV and JSON formats in the current working directory.
+The data is exported in CSV and JSON formats in the same directory as the script.
 
 .EXAMPLE
 .\export-vcenter-vms.ps1
@@ -47,6 +47,9 @@ if (-not $vCenterCredential) {
 $vCenterUser = $vCenterCredential.UserName
 $vCenterPass = $vCenterCredential.GetNetworkCredential().Password
 
+$OutFileCSV = Join-Path -Path $PSScriptRoot -ChildPath "vms.csv"
+$OutFileJSON = Join-Path -Path $PSScriptRoot -ChildPath "vms.json"
+
 function exportUsingPowerCLI {
   Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -ParticipateInCEIP:$false -Confirm:$false | Out-Null
   
@@ -59,6 +62,12 @@ function exportUsingPowerCLI {
     $flags['Password'] = $vCenterPass
   }
   $viServer = Connect-VIServer @flags
+
+  if (-not $viServer) {
+    Write-Host "Failed to connect to the vCenter server. Please check the address and credentials and try again."
+    return
+  }
+  Write-Host "Connected to the vCenter server: $viServer . Fetching VMs..."
 
   # Get-VM docs :
   # https://developer.vmware.com/docs/powercli/latest/vmware.vimautomation.core/commands/get-vm/#Default
@@ -85,8 +94,8 @@ function exportUsingPowerCLI {
     }
     $vms += $vmInfo
   }
-  $vms | ConvertTo-Csv | Out-File -FilePath vms.csv
-  $vms | ConvertTo-Json | Out-File -FilePath vms.json
+  $vms | ConvertTo-Csv | Out-File -FilePath $OutFileCSV
+  $vms | ConvertTo-Json | Out-File -FilePath $OutFileJSON
   Disconnect-VIServer -Server $viServer -Confirm:$false
 }
 
@@ -98,6 +107,11 @@ function exportUsingGovc {
   $env:GOVC_INSECURE = 'true'
 
   $vmList = govc find -l -type m
+  if (-not $vmList) {
+    Write-Host "Failed to connect to the vCenter server. Please check the address and credentials and try again."
+    return
+  }
+  Write-Host "Connected to the vCenter server: $vCenterAddress . Fetching VMs..."
   $vms = @()
   foreach ($vmEntry in $vmList) {
     $vmPath = $vmEntry -replace '^VirtualMachine\s+', ''
@@ -122,8 +136,8 @@ function exportUsingGovc {
     }
     $vms += $vm
   }
-  $vms | ConvertTo-Csv | Out-File -FilePath vms.csv
-  $vms | ConvertTo-Json | Out-File -FilePath vms.json
+  $vms | ConvertTo-Csv | Out-File -FilePath $OutFileCSV
+  $vms | ConvertTo-Json | Out-File -FilePath $OutFileJSON
 }
 
 $usePowerCLI = $false
@@ -153,3 +167,9 @@ if ($usePowerCLI) {
 } else {
   exportUsingGovc
 }
+
+Write-Host @"
+Inventory data has been exported to:
+- CSV file: $OutFileCSV
+- JSON file: $OutFileJSON
+"@
