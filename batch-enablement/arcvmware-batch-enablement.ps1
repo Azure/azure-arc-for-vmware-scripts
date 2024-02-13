@@ -411,8 +411,6 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     guestAgent = $true
   }
 
-  LogDebug "resCountInDeployment = $resCountInDeployment $moRefId $($inv.moName) $alreadyEnabled"
-
   if (($resCountInDeployment + 4) -ge $armTemplateLimit -or ($i + 1) -eq $attemptedVMs.Length) {
     $deployment = $deploymentTemplate | ConvertTo-Json -Depth 30 | ConvertFrom-Json
     $deployment.resources = $resources
