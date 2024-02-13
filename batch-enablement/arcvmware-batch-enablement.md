@@ -2,6 +2,13 @@
 
 This PowerShell script, [`arcvmware-batch-enablement.ps1`](./arcvmware-batch-enablement.ps1), is designed to enable Virtual Machines (VMs) in a vCenter in batch. It's particularly useful for large-scale operations where you need to manage hundreds or thousands of VMs.
 
+# Important
+
+> [!IMPORTANT]
+> When guest management is enabled, the script saves your guest VM credential in a file `.do-not-reveal-guestvm-credential.json` in the same directory where the script is present.
+> Please ensure that you delete this file after the script has completed its execution.
+> The ARM template uses this file as the parameter to enable guest management on the VMs.
+
 ## Features
 
 - Creates a log file (`vmware-batch.log`) for tracking the script's operation.

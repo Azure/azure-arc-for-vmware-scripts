@@ -52,7 +52,8 @@ param(
   [switch]$Execute
 )
 
-$logFile = Join-Path $PSScriptRoot -ChildPath "vmware-batch.log"
+$logFile = Join-Path $PSScriptRoot -ChildPath "arcvmware-batch-enablement.log"
+$azDebugLog = Join-Path $PSScriptRoot -ChildPath "vmw-az-debug.log"
 
 # https://stackoverflow.com/a/40098904/7625884
 $PSDefaultParameterValues = @{ '*:Encoding' = 'utf8' }
@@ -122,7 +123,7 @@ function Get-ARMPartsFromID($id) {
 $VMtpl = @{
   type       = "Microsoft.Resources/deployments"
   apiVersion = "2021-04-01"
-  name       = "{{vmName}}-vmcreation"
+  name       = "{{vmName}}-vm"
   properties = @{
     mode     = "Incremental"
     template = @{
@@ -164,9 +165,9 @@ $VMtpl = @{
 $GMtpl = @{
   type       = "Microsoft.Resources/deployments"
   apiVersion = "2021-04-01"
-  name       = "{{vmName}}-guestmgmt"
+  name       = "{{vmName}}-gm"
   dependsOn  = @(
-    "[resourceId('Microsoft.Resources/deployments','{{vmName}}-vmcreation')]"
+    "[resourceId('Microsoft.Resources/deployments','{{vmName}}-vm')]"
   )
   properties = @{
     mode     = "Incremental"
@@ -194,8 +195,8 @@ $GMtpl = @{
           properties = @{
             provisioningAction = "install"
             credentials        = @{
-              username = "{{username}}"
-              password = "{{password}}"
+              username = "[parameters('guestManagementUsername')]"
+              password = "[parameters('guestManagementPassword')]"
             }
           }
           dependsOn  = @(
@@ -207,9 +208,30 @@ $GMtpl = @{
   }
 }
 
+$parametersTemplate = @{
+  '$schema'      = "https://schema.management.azure.com/schemas/2015-01-01/deploymentParameters.json#"
+  contentVersion = "1.0.0.0"
+  parameters = @{
+    guestManagementUsername = @{
+      value = ""
+    }
+    guestManagementPassword = @{
+      value = ""
+    }
+  }
+}
+
 $deploymentTemplate = @{
   '$schema'      = "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#"
   contentVersion = "1.0.0.0"
+  parameters = @{
+    guestManagementUsername = @{
+      type = "string"
+    }
+    guestManagementPassword = @{
+      type = "securestring"
+    }
+  }
   resources      = @()
 }
 
@@ -296,14 +318,26 @@ if ($EnableGuestManagement -and !$VMCredential) {
   $VMCredential = Get-Credential -Message "Enter the VM credentials for enabling guest management"
 }
 
+$uniqueIdx = 0
+
 function normalizeMoName() {
   param(
     [Parameter(Mandatory=$true)]
     [string]$name
   )
+  # https://learn.microsoft.com/en-us/azure/azure-resource-manager/troubleshooting/error-reserved-resource-name
+  $reservedWords = @(
+    @{reserved = "microsoft"; replacement = "msft"},
+    @{reserved = "windows"; replacement = "win"}
+  )
+  foreach ($word in $reservedWords) {
+    $name = $name -replace $word.reserved, $word.replacement
+  }
   $res = $name -replace "[^A-Za-z0-9-]", "-"
-  if ($res.Length -gt 53) {
-    $res = $res.Substring(0, 52) + "-"
+  $suffixLen = "-vm".Length # or "-gm".Length
+  if ($res.Length + $suffixLen -gt 64) {
+    $res = $res.Substring(0, 64 - $suffixLen - 3) + "$uniqueIdx"
+    $Script:uniqueIdx += 1
   }
   return $res
 }
@@ -320,7 +354,7 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
   $moRefId = $attemptedVMs[$i].moRefId
 
   if (!$moRefId2Inv.ContainsKey($moRefId)) {
-    LogDebug "Warning: VM with moRefId $moRefId not found in the vCenter inventory in azure. Skipping."
+    LogDebug "[$($i+1) / $($attemptedVMs.Length)] Warning: VM with moRefId $moRefId not found in the vCenter inventory in azure. Skipping."
     $summary += [ordered]@{
       vmName     = "$($attemptedVMs[$i].vmName)"
       moRefId    = $moRefId
@@ -329,8 +363,6 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     }
     continue
   }
-
-  $resCntCurr = 0
 
   $inv = $moRefId2Inv[$moRefId]
 
@@ -354,27 +386,21 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
       -replace "{{vCenterId}}", $VCenterId `
       -replace "{{customLocationId}}", $customLocationId `
       | ConvertFrom-Json
-    $resCntCurr += 2
+    $resCountInDeployment += 2
     $resources += $vmResource
   }
 
   if ($EnableGuestManagement) {
-    # NOTE: Set the username and password here. You can also use environment variables to fetch the username and password.
-    $username = "Administrator"
-    $password = "Password"
-
     $gmResource = $GMtpl | ConvertTo-Json -Depth 30
     $gmResource = $gmResource `
       -replace "{{location}}", $location `
       -replace "{{vmName}}", $vmName `
-      -replace "{{username}}", $username `
-      -replace "{{password}}", $password `
       | ConvertFrom-Json
 
     if ($alreadyEnabled) {
       $gmResource.dependsOn = @()
     }
-    $resCntCurr += 2
+    $resCountInDeployment += 2
     $resources += $gmResource
   }
 
@@ -385,9 +411,25 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     guestAgent = $true
   }
 
+  LogDebug "resCountInDeployment = $resCountInDeployment $moRefId $($inv.moName) $alreadyEnabled"
+
   if (($resCountInDeployment + 4) -ge $armTemplateLimit -or ($i + 1) -eq $attemptedVMs.Length) {
     $deployment = $deploymentTemplate | ConvertTo-Json -Depth 30 | ConvertFrom-Json
     $deployment.resources = $resources
+
+    $deployArgs = @()
+    if ($EnableGuestManagement) {
+      $paramsPath = Join-Path $PSScriptRoot -ChildPath ".do-not-reveal-guestvm-credential.json"
+      $parametersTemplate.parameters.guestManagementUsername.value = $VMCredential.UserName
+      $parametersTemplate.parameters.guestManagementPassword.value = $VMCredential.GetNetworkCredential().Password
+      $parametersTemplate | ConvertTo-Json -Depth 10 | Out-File -FilePath $paramsPath -Encoding UTF8
+      $deployArgs += @(
+        "--parameters",
+        "@$paramsPath"
+      )
+    } else {
+      $deployment.parameters = @{}
+    }
 
     $batch += 1
     $deploymentName = "vmw-dep-$StartTime-$batch"
@@ -396,14 +438,15 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     $deployment `
     | ConvertTo-Json -Depth 30
     | Out-File -FilePath $deploymentFilePath -Encoding UTF8
-    if (!$Execute) {
+
+    if ($Execute) {
       $deploymentId = "/subscriptions/$subId/resourceGroups/$resourceGroupName/providers/Microsoft.Resources/deployments/$deploymentName"
       $deploymentUrl = "https://portal.azure.com/#resource$($deploymentId)/overview"
       Add-Content -Path $deploymentUrlsFilePath -Value $deploymentUrl
 
       LogText "(Batch $batch) Deploying $deploymentFilePath"
 
-      az deployment group create --resource-group $resourceGroupName --name $deploymentName --template-file $deploymentFilePath --verbose *>> $logFile
+      az deployment group create --resource-group $resourceGroupName --name $deploymentName --template-file $deploymentFilePath @deployArgs --debug *>> $azDebugLog
     }
     $resources = @()
 
