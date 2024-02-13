@@ -1,0 +1,5 @@
+**/vmw-dep-*.json
+**/vmw-dep-*.csv
+**/all-deployments-*.txt
+**/.do-not-reveal-*
+**/*.log
