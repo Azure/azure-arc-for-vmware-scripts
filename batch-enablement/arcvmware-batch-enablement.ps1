@@ -367,7 +367,7 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
 
   if (!$moRefId2Inv.ContainsKey($moRefId)) {
     LogDebug "[$($i+1) / $($attemptedVMs.Length)] Warning: VM with moRefId $moRefId not found in the vCenter inventory in azure. Skipping."
-    $summary += [ordered]@{
+    $summary += [PSCustomObject] @{
       vmName     = "$($attemptedVMs[$i].vmName)"
       moRefId    = $moRefId
       enabled    = $false
@@ -416,7 +416,7 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     $resources += $gmResource
   }
 
-  $summary += [ordered]@{
+  $summary += [PSCustomObject] @{
     vmName = $vmName
     moRefId = $moRefId
     enabled = !$alreadyEnabled
@@ -466,4 +466,4 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
   }
 }
 
-$summary | ConvertTo-Csv | Out-File vmw-dep-summary.csv
+$summary | Export-Csv -Path "$PSScriptRoot\vmw-dep-summary.csv" -NoTypeInformation
