@@ -5,7 +5,8 @@
 Export the vCenter inventory VMs to a CSV or JSON file. This can be done by running the script [export-vcenter-vms.ps1](./export-vcenter-vms.ps1). The readme for the script is [here](./export-vcenter-vms.md).
 
 ```powershell
-./export-vcenter-vms.ps1 -VCenterId /subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter
+$cred = Get-Credential -Message "Enter the credentials for the vCenter"
+./export-vcenter-vms.ps1 -vCenterAddress contoso-vcenter.contoso.com -vCenterCredential $cred
 ```
 
 ## Step 2

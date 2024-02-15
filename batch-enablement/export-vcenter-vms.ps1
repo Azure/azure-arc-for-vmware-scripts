@@ -73,13 +73,13 @@ function exportUsingPowerCLI {
   # https://developer.vmware.com/docs/powercli/latest/vmware.vimautomation.core/commands/get-vm/#Default
   # Properties Returned by Get-VM:
   # https://developer.vmware.com/docs/powercli/latest/vmware.vimautomation.core/structures/vmware.vimautomation.vicore.types.v1.inventory.virtualmachine/
-  $vmList = Get-VM -Server $viServer
+  $vmList = VMware.VimAutomation.Core\Get-VM -Server $viServer
   $vms = @()
   foreach ($vm in $vmList) {
     if ($vm.ExtensionData.Config.Template) {
       continue
     }
-    $vmInfo = [ordered]@{
+    $vmInfo = [PSCustomObject] @{
       vmName             = "$($vm.ExtensionData.Name)"
       moRefId            = "$($vm.ExtensionData.MoRef.Value)"
       connectionState    = "$($vm.ExtensionData.Summary.Runtime.ConnectionState)"
@@ -95,7 +95,7 @@ function exportUsingPowerCLI {
     $vms += $vmInfo
   }
   $vms | ConvertTo-Csv | Out-File -FilePath $OutFileCSV
-  $vms | ConvertTo-Json | Out-File -FilePath $OutFileJSON
+  $vms | Export-Csv -Path $OutFileCSV -NoTypeInformation
   Disconnect-VIServer -Server $viServer -Confirm:$false
 }
 
