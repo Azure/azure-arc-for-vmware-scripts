@@ -121,7 +121,7 @@ function exportUsingGovc {
     if ($summary.config.template) {
       continue
     }
-    $vm = [ordered]@{
+    $vm = [PSCustomObject] @{
       vmName             = "$($summary.config.name)"
       moRefId            = "$($summary.vm.value)"
       connectionState    = "$($summary.runtime.connectionState)"
@@ -137,14 +137,16 @@ function exportUsingGovc {
     $vms += $vm
   }
   $vms | ConvertTo-Csv | Out-File -FilePath $OutFileCSV
-  $vms | ConvertTo-Json | Out-File -FilePath $OutFileJSON
+  $vms | Export-Csv -Path $OutFileCSV -NoTypeInformation
 }
 
 $usePowerCLI = $false
 
 if (Get-Command Connect-VIServer -ErrorAction SilentlyContinue) {
+  Write-Host "PowerCLI is installed. Exporting VMs using PowerCLI..."
   $usePowerCLI = $true
 } elseif (Get-Command govc -ErrorAction SilentlyContinue) {
+  Write-Host "govc is installed. Exporting VMs using govc..."
   $usePowerCLI = $false
 } else {
   Write-Host @"
