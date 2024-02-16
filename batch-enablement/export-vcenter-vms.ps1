@@ -102,7 +102,7 @@ function exportUsingPowerCLI {
     }
     $vms += $vmInfo
   }
-  $vms | ConvertTo-Csv | Out-File -FilePath $OutFileCSV
+  $vms | ConvertTo-Json -Depth 10 | Out-File -FilePath $OutFileJSON
   $vms | Export-Csv -Path $OutFileCSV -NoTypeInformation
   Disconnect-VIServer -Server $viServer -Confirm:$false
 }
@@ -152,7 +152,7 @@ function exportUsingGovc {
     }
     $vms += $vm
   }
-  $vms | ConvertTo-Csv | Out-File -FilePath $OutFileCSV
+  $vms | ConvertTo-Json -Depth 10 | Out-File -FilePath $OutFileJSON
   $vms | Export-Csv -Path $OutFileCSV -NoTypeInformation
 }
 
