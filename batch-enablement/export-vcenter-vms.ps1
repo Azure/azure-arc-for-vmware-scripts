@@ -79,18 +79,26 @@ function exportUsingPowerCLI {
     if ($vm.ExtensionData.Config.Template) {
       continue
     }
+    $guestId = $vm.ExtensionData.Summary.Guest.GuestId
+    if (-not $guestId) {
+      $guestId = $vm.ExtensionData.Summary.Config.GuestId
+    }
+    $guestFullName = $vm.ExtensionData.Summary.Guest.GuestFullName
+    if (-not $guestFullName) {
+      $guestFullName = $vm.ExtensionData.Summary.Config.GuestFullName
+    }
     $vmInfo = [PSCustomObject] @{
       vmName             = "$($vm.ExtensionData.Name)"
       moRefId            = "$($vm.ExtensionData.MoRef.Value)"
       connectionState    = "$($vm.ExtensionData.Summary.Runtime.ConnectionState)"
-      guestId            = "$($vm.ExtensionData.Guest.GuestId)"
+      guestId            = "$($guestId)"
       guestFamily        = "$($vm.ExtensionData.Guest.GuestFamily)"
-      guestFullName      = "$($vm.ExtensionData.Guest.GuestFullName)"
-      hostName           = "$($vm.ExtensionData.Guest.HostName)"
+      guestFullName      = "$($guestFullName)"
+      hostName           = "$($vm.ExtensionData.Summary.Guest.HostName)"
       powerState         = "$($vm.ExtensionData.Summary.Runtime.PowerState)"
       toolsVersion       = "$($vm.ExtensionData.Guest.ToolsVersion)"
-      toolsVersionStatus = "$($vm.ExtensionData.Guest.ToolsVersionStatus2)"
-      toolsRunningStatus = "$($vm.ExtensionData.Guest.ToolsRunningStatus)"
+      toolsVersionStatus = "$($vm.ExtensionData.Summary.Guest.ToolsVersionStatus2)"
+      toolsRunningStatus = "$($vm.ExtensionData.Summary.Guest.ToolsRunningStatus)"
     }
     $vms += $vmInfo
   }
@@ -121,18 +129,26 @@ function exportUsingGovc {
     if ($summary.config.template) {
       continue
     }
+    $guestId = $summary.config.guestId
+    if (-not $guestId) {
+      $guestId = $guest.guestId
+    }
+    $guestFullName = $summary.config.guestFullName
+    if (-not $guestFullName) {
+      $guestFullName = $guest.guestFullName
+    }
     $vm = [PSCustomObject] @{
       vmName             = "$($summary.config.name)"
       moRefId            = "$($summary.vm.value)"
       connectionState    = "$($summary.runtime.connectionState)"
-      guestId            = "$($guest.guestId)"
+      guestId            = "$($guestId)"
       guestFamily        = "$($guest.guestFamily)"
-      guestFullName      = "$($guest.guestFullName)"
-      hostName           = "$($guest.hostName)"
+      guestFullName      = "$($guestFullName)"
+      hostName           = "$($summary.guest.hostName)"
       powerState         = "$($summary.runtime.powerState)"
       toolsVersion       = "$($guest.toolsVersion)"
-      toolsVersionStatus = "$($guest.toolsVersionStatus2)"
-      toolsRunningStatus = "$($guest.toolsRunningStatus)"
+      toolsVersionStatus = "$($summary.guest.toolsVersionStatus2)"
+      toolsRunningStatus = "$($summary.guest.toolsRunningStatus)"
     }
     $vms += $vm
   }
