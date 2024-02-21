@@ -475,10 +475,11 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     }
     $resources = @()
 
+    $summary | Export-Csv -Path "$PSScriptRoot\vmw-dep-summary.csv" -NoTypeInformation -Append
+    $summary = @()
+
     # NOTE: set sleep time between deployments here, if needed.
     LogText "Sleeping for 5 seconds before running next batch"
     Start-Sleep -Seconds 5
   }
 }
-
-$summary | Export-Csv -Path "$PSScriptRoot\vmw-dep-summary.csv" -NoTypeInformation
