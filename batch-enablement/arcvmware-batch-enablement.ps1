@@ -363,6 +363,21 @@ $batch = 0
 $summary = @()
 
 for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
+
+  # Check if $attemptedVMs[$i] has the required keys : moRefId and vmName, else skip
+  $requiredKeys = @("moRefId", "vmName")
+  $keysPresent = $true
+  foreach ($key in $requiredKeys) {
+    if (!$attemptedVMs[$i].PSObject.Properties[$key]) {
+      LogText "[$($i+1) / $($attemptedVMs.Length)] Warning: VM at index $i does not have the required property: $key. Skipping this VM: $($attemptedVMs[$i] | ConvertTo-Json -Compress)"
+      $keysPresent = $false
+      break
+    }
+  }
+  if (!$keysPresent) {
+    continue
+  }
+
   $moRefId = $attemptedVMs[$i].moRefId
 
   if (!$moRefId2Inv.ContainsKey($moRefId)) {

@@ -11,15 +11,24 @@ $cred = Get-Credential -Message "Enter the credentials for the vCenter"
 
 ## Step 2
 
-The exported inventory VM data (CSV or JSON) can be filtered and split into multiple files as per the requriement. For each file, we'll use a single user account to enable the VMs to Arc in Step 3. So, if you are using different user accounts, you can split the file into multiple files.
+The exported inventory VM data (CSV or JSON) can be filtered and split into multiple files as per the requirement. For each file, we'll use a single user account to enable the VMs to Arc in Step 3. So, if you are using different user accounts, you can split the file into multiple files.
 
 ## Step 3
+
+Before proceeding, please do the following:
+
+- Install `azure-cli`
+- Install `connectedvmware` extension for `azure-cli` by running the following command:
+  ```bash
+  az extension add --name connectedvmware
+  ```
+- Login to Azure using `az login`
 
 Run the script [arcvmware-batch-enablement.ps1](./arcvmware-batch-enablement.ps1) to enable the VMs to Arc. The readme for the script is [here](./arcvmware-batch-enablement.md).
 First, you can run it in default mode to check the summary of the azure operations that will be performed. If you are satisfied with the summary, you can re-run the script with the `-Execute` switch to perform the azure operations.
 
 > [!IMPORTANT]
-> The VMInventoryFile needs to have atleast the following columns:
+> The VMInventoryFile needs to have at least the following columns:
 > - vmName
 > - moRefId
 
