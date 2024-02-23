@@ -55,7 +55,6 @@ param(
   [string]$SubscriptionId,
   [string]$ResourceGroup,
   [switch]$EnableGuestManagement,
-  [int]$VMCountPerDeployment,
   [PSCredential]$VMCredential,
   [switch]$Execute
 )
@@ -466,10 +465,16 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
 
     if ($Execute) {
       $deploymentId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.Resources/deployments/$deploymentName"
-      $deploymentUrl = "https://portal.azure.com/#resource$($deploymentId)/overview"
+      try {
+        $deploymentIdEsc = [uri]::EscapeDataString($deploymentId)
+        $deploymentUrl = "https://portal.azure.com/#view/HubsExtension/DeploymentDetailsBlade/~/overview/id/$deploymentIdEsc"
+      } catch {
+        $deploymentUrl = "https://portal.azure.com/#resource$($deploymentId)/overview"
+      }
       Add-Content -Path $deploymentUrlsFilePath -Value $deploymentUrl
 
       LogText "(Batch $batch) Deploying $deploymentFilePath"
+      LogText "(Batch $batch) You can track the deployment through azure portal using the following link: $deploymentUrl"
 
       az deployment group create --subscription $SubscriptionId --resource-group $ResourceGroup --name $deploymentName --template-file $deploymentFilePath @deployArgs --debug *>> $azDebugLog
     }
