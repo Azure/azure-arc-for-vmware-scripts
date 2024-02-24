@@ -2,9 +2,9 @@
 .SYNOPSIS
 This is a helper script for enabling VMs in a vCenter in batch. The script will create the following files:
   vmware-batch.log - log file
-  all-deployments-<timestamp>.txt - list of Azure portal links to all deployments created
-  vmw-dep-<timestamp>-<batch>.json - ARM deployment files
-  vmw-dep-summary.csv - summary of the VMs enabled
+  deployments-<timestamp>/all-deployments-<timestamp>.txt - list of Azure portal links to all deployments created
+  deployments-<timestamp>/vmw-dep-<timestamp>-<batch>.json - ARM deployment files
+  deployments-<timestamp>/all-summary.csv - summary of the VMs enabled
 
 Before running this script, please install az cli and the connectedvmware extension.
 az extension add --name connectedvmware
@@ -81,7 +81,9 @@ function Get-TimeStamp {
 
 $StartTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH-mm-ss")
 
-$deploymentUrlsFilePath = Join-Path $PSScriptRoot -ChildPath "all-deployments-$StartTime.txt"
+$deploymentFolderPath = Join-Path $PSScriptRoot -ChildPath "deployments-$StartTime"
+$deploymentUrlsFilePath = Join-Path $deploymentFolderPath -ChildPath "all-deployments.txt"
+$deploymentSummaryFilePath = Join-Path $deploymentFolderPath -ChildPath "all-summary.csv"
 
 function LogText {
   param(
@@ -385,8 +387,8 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     $summary += [PSCustomObject] @{
       vmName     = "$($attemptedVMs[$i].vmName)"
       moRefId    = $moRefId
-      enabled    = $false
-      guestAgent = $false
+      arcEnableAttempted    = $false
+      guestAgentAttempted = $false
     }
     continue
   }
@@ -434,8 +436,8 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
   $summary += [PSCustomObject] @{
     vmName = $vmName
     moRefId = $moRefId
-    enabled = !$alreadyEnabled
-    guestAgent = $true
+    arcEnableAttempted = !$alreadyEnabled
+    guestAgentAttempted = $true
   }
 
   if (($resCountInDeployment + 4) -ge $armTemplateLimit -or ($i + 1) -eq $attemptedVMs.Length) {
@@ -458,7 +460,10 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
 
     $batch += 1
     $deploymentName = "vmw-dep-$StartTime-$batch"
-    $deploymentFilePath = Join-Path $PSScriptRoot -ChildPath "$deploymentName.json"
+    if (!(Test-Path $deploymentFolderPath)) {
+      New-Item -ItemType Directory -Path $deploymentFolderPath | Out-Null
+    }
+    $deploymentFilePath = Join-Path $deploymentFolderPath -ChildPath "$deploymentName.json"
 
     $deployment `
     | ConvertTo-Json -Depth 30 `
@@ -481,7 +486,7 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     }
     $resources = @()
 
-    $summary | Export-Csv -Path "$PSScriptRoot\vmw-dep-summary.csv" -NoTypeInformation -Append
+    $summary | Export-Csv -Path $deploymentSummaryFilePath -NoTypeInformation -Append
     $summary = @()
 
     # NOTE: set sleep time between deployments here, if needed.
