@@ -190,9 +190,9 @@ $GMtpl = @{
           location   = "{{location}}"
           properties = @{
           }
-          # identity   = @{
-          #   type = "SystemAssigned"
-          # }
+          identity   = @{
+            type = "SystemAssigned"
+          }
         }
         @{
           type       = "Microsoft.ConnectedVMwarevSphere/VirtualMachineInstances/guestAgents"
@@ -336,6 +336,7 @@ function normalizeMoName() {
     [Parameter(Mandatory=$true)]
     [string]$name
   )
+  $maxLen = 54
   # https://learn.microsoft.com/en-us/azure/azure-resource-manager/troubleshooting/error-reserved-resource-name
   $reservedWords = @(
     @{reserved = "microsoft"; replacement = "msft"},
@@ -346,8 +347,8 @@ function normalizeMoName() {
   }
   $res = $name -replace "[^A-Za-z0-9-]", "-"
   $suffixLen = "-vm".Length # or "-gm".Length
-  if ($res.Length + $suffixLen -gt 64) {
-    $res = $res.Substring(0, 64 - $suffixLen - 3) + "$uniqueIdx"
+  if ($res.Length + $suffixLen -gt $maxLen) {
+    $res = $res.Substring(0, $maxLen - $suffixLen - 3) + "$uniqueIdx"
     $Script:uniqueIdx += 1
   }
   return $res
