@@ -55,12 +55,10 @@ param(
   [string]$SubscriptionId,
   [string]$ResourceGroup,
   [switch]$EnableGuestManagement,
+  [string]$ProxyUrl,
   [PSCredential]$VMCredential,
   [switch]$Execute
 )
-
-$logFile = Join-Path $PSScriptRoot -ChildPath "arcvmware-batch-enablement.log"
-$azDebugLog = Join-Path $PSScriptRoot -ChildPath "vmw-az-debug.log"
 
 # https://stackoverflow.com/a/40098904/7625884
 $PSDefaultParameterValues = @{ '*:Encoding' = 'utf8' }
@@ -81,9 +79,11 @@ function Get-TimeStamp {
 
 $StartTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH-mm-ss")
 
+$logFile = Join-Path $PSScriptRoot -ChildPath "arcvmware-batch-enablement.log"
 $deploymentFolderPath = Join-Path $PSScriptRoot -ChildPath "deployments-$StartTime"
 $deploymentUrlsFilePath = Join-Path $deploymentFolderPath -ChildPath "all-deployments.txt"
 $deploymentSummaryFilePath = Join-Path $deploymentFolderPath -ChildPath "all-summary.csv"
+$azDebugLog = Join-Path $deploymentFolderPath -ChildPath "az-debug.log"
 
 function LogText {
   param(
@@ -207,6 +207,9 @@ $GMtpl = @{
               username = "[parameters('guestManagementUsername')]"
               password = "[parameters('guestManagementPassword')]"
             }
+            httpProxyConfig = @{
+              httpsProxy = "{{proxyUrl}}"
+            }
           }
           dependsOn  = @(
             "[resourceId('Microsoft.HybridCompute/machines','{{vmName}}')]"
@@ -252,6 +255,9 @@ Starting script with the following parameters:
   EnableGuestManagement: $EnableGuestManagement
   VMInventoryFile: $VMInventoryFile
   VMCredential: $VMCredential
+  SubscriptionId: $SubscriptionId
+  ResourceGroup: $ResourceGroup
+  ProxyUrl: $ProxyUrl
   Execute: $Execute
 "@
 
@@ -425,6 +431,12 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
       -replace "{{location}}", $location `
       -replace "{{vmName}}", $vmName `
       | ConvertFrom-Json
+    
+    if ($ProxyUrl) {
+      $gmResource.properties.template.resources[1].properties.httpProxyConfig.httpsProxy = $ProxyUrl
+    } else {
+      $gmResource.properties.template.resources[1].properties.httpProxyConfig = @{}
+    }
 
     if ($alreadyEnabled) {
       $gmResource.dependsOn = @()
@@ -444,6 +456,10 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     $deployment = $deploymentTemplate | ConvertTo-Json -Depth 30 | ConvertFrom-Json
     $deployment.resources = $resources
 
+    if (!(Test-Path $deploymentFolderPath)) {
+      New-Item -ItemType Directory -Path $deploymentFolderPath | Out-Null
+    }
+
     $deployArgs = @()
     if ($EnableGuestManagement) {
       $paramsPath = Join-Path $PSScriptRoot -ChildPath ".do-not-reveal-guestvm-credential.json"
@@ -460,9 +476,6 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
 
     $batch += 1
     $deploymentName = "vmw-dep-$StartTime-$batch"
-    if (!(Test-Path $deploymentFolderPath)) {
-      New-Item -ItemType Directory -Path $deploymentFolderPath | Out-Null
-    }
     $deploymentFilePath = Join-Path $deploymentFolderPath -ChildPath "$deploymentName.json"
 
     $deployment `

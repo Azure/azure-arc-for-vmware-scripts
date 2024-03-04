@@ -1,5 +1,9 @@
 # Arc for VMWare Batch enablement
 
+## Behind HTTP Proxy
+
+If you are behind an HTTP proxy, you can run the script [ps-http-proxy.ps1](./ps-http-proxy.ps1) to set the proxy for the current PowerShell window.
+
 ## Step 1
 
 Export the vCenter inventory VMs to a CSV or JSON file. This can be done by running the script [export-vcenter-vms.ps1](./export-vcenter-vms.ps1). The readme for the script is [here](./export-vcenter-vms.md).

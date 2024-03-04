@@ -174,7 +174,7 @@ Install-Module -Name VMware.PowerCLI -Scope AllUsers -Confirm:$false -Force
 You can install govc by downloading the latest release from https://github.com/vmware/govmomi/releases
 $url = "https://github.com/vmware/govmomi/releases/download/v0.34.2/govc_Windows_x86_64.zip"
 Invoke-WebRequest -Uri $url -OutFile govc.zip
-Expand-Archive -Path govc.zip -DestinationPath $env:ProgramFiles # Windows
+Expand-Archive -Path govc.zip -DestinationPath $env:SystemRoot\System32 # Windows
 Expand-Archive -Path govc.zip -DestinationPath /usr/local/bin # Linux
 "@
   return
