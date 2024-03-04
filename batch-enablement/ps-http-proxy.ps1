@@ -1,11 +1,15 @@
 
 Write-Host "Provide proxy details"
-$proxyURL = Read-Host "Proxy URL"
+$proxyURL = Read-Host "Proxy URL (eg: http://contoso.squid.local:3128)"
+if ($proxyURL -eq "") {
+  Write-Host "No proxy URL provided. Skipping proxy configuration."
+  return
+}
 if ($proxyURL.StartsWith("http") -ne $true) {
   $proxyURL = "http://$proxyURL"
 }
 
-$noProxy = Read-Host "No Proxy (comma separated)"
+$noProxy = Read-Host "No Proxy (comma separated, press enter to skip)"
 
 $env:http_proxy = $proxyURL
 $env:HTTP_PROXY = $proxyURL

@@ -1,10 +1,18 @@
 # Arc for VMWare Batch enablement
 
+The script(s) can be run on PowerShell (Windows) or PowerShell Core (Windows, Linux, macOS).
+
 ## Behind HTTP Proxy
 
 If you are behind an HTTP proxy, you can run the script [ps-http-proxy.ps1](./ps-http-proxy.ps1) to set the proxy environment for the current PowerShell window.
 
 ## Step 1
+
+Before proceeding, please install PowerCLI by running the following command. You can skip this step if you already have PowerCLI installed.
+
+```powershell
+Install-Module -Name VMware.PowerCLI -Scope AllUsers -Confirm:$false -Force
+```
 
 Export the vCenter inventory VMs to a CSV or JSON file. This can be done by running the script [export-vcenter-vms.ps1](./export-vcenter-vms.ps1). The readme for the script is [here](./export-vcenter-vms.md).
 
@@ -21,11 +29,11 @@ The exported inventory VM data (CSV or JSON) can be filtered and split into mult
 
 Before proceeding, please do the following:
 
-- Install `azure-cli`
+- [Install `azure-cli`](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli). On windows, install the 64-bit MSI version. You can skip this step if you already have `azure-cli` installed.
 - Install `connectedvmware` extension for `azure-cli` by running the following command:
-  ```bash
-  az extension add --name connectedvmware
-  ```
+    ```bash
+    az extension add --name connectedvmware
+    ```
 - Login to Azure using `az login`
 
 Run the script [arcvmware-batch-enablement.ps1](./arcvmware-batch-enablement.ps1) to enable the VMs to Arc. The readme for the script is [here](./arcvmware-batch-enablement.md).

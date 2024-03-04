@@ -309,7 +309,12 @@ if ($vcInfo.Type -ne "VCenters") {
   exit
 }
 
-$vcenterProps = az connectedvmware vcenter show --subscription $vcInfo.SubscriptionId --resource-group $vcInfo.ResourceGroup --name $vCenterName --query '{clId: extendedLocation.name, location:location}' -o json | ConvertFrom-Json
+$vcPropsJson = az connectedvmware vcenter show --subscription $vcInfo.SubscriptionId --resource-group $vcInfo.ResourceGroup --name $vCenterName --query '{clId: extendedLocation.name, location:location}' -o json
+if (!$vcPropsJson) {
+  LogError "Failed to get vCenter properties for $vCenterName . Please make sure you have logged in to azure using 'az login'."
+  exit
+}
+$vcenterProps = $vcPropsJson | ConvertFrom-Json
 $customLocationId = $vcenterProps.clId
 if (!$customLocationId) {
   LogError "Failed to extract custom location id from vCenter $vCenterName"
