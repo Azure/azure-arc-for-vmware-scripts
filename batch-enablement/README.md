@@ -2,7 +2,7 @@
 
 ## Behind HTTP Proxy
 
-If you are behind an HTTP proxy, you can run the script [ps-http-proxy.ps1](./ps-http-proxy.ps1) to set the proxy for the current PowerShell window.
+If you are behind an HTTP proxy, you can run the script [ps-http-proxy.ps1](./ps-http-proxy.ps1) to set the proxy environment for the current PowerShell window.
 
 ## Step 1
 
