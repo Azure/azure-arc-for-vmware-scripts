@@ -15,7 +15,7 @@ This PowerShell script, [`arcvmware-batch-enablement.ps1`](./arcvmware-batch-ena
 
 ## Features
 
-- Creates a log file (`vmware-batch.log`) for tracking the script's operation.
+- Creates a log file (`arcvmware-batch-enablement.log`) for tracking the script's operation.
 - Generates a list of Azure portal links to all deployments created (`all-deployments-<timestamp>.txt`).
 - Creates ARM deployment files (`vmw-dep-<timestamp>-<batch>.json`).
 - Can enable up to 200 VMs in a single ARM deployment if guest management is enabled, else 400 VMs.
@@ -31,15 +31,21 @@ Before running this script, please install:
 
 ## Usage
 
-1. Download the script to your local machine.
-2. Open a PowerShell terminal and navigate to the directory containing the script.
-3. Run the script with the required parameters. For example:
+1. First generate the VM inventory file by running the script [export-vcenter-vms.ps1](./export-vcenter-vms.ps1). The readme for the script is [here](./export-vcenter-vms.md).
+2. Download the script to your local machine.
+3. Open a PowerShell terminal and navigate to the directory containing the script.
+4. Run the script with the required parameters. First, you can run it in default mode to check the summary of the azure operations that will be performed. If you are satisfied with the summary, you can re-run the script with the `-Execute` switch to perform the azure operations.
+
+> [!IMPORTANT]
+> The VMInventoryFile needs to have at least the following columns:
+> - vmName
+> - moRefId
 
 ```powershell
-.\arcvmware-batch-enablement.ps1 -VCenterId "<vCenterId>" -EnableGuestManagement -VMCountPerDeployment 3 -DryRun
+./arcvmware-batch-enablement.ps1 -VCenterId /subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter -EnableGuestManagement -VMInventoryFile vms.json
 ```
-
-Replace `<vCenterId>` with the ARM ID of your vCenter.
+> [!NOTE]
+> To get the detailed help for the script, run `Get-Help .\arcvmware-batch-enablement.ps1 -Detailed`.
 
 ## Parameters
 
