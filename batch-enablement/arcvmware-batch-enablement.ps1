@@ -6,8 +6,9 @@ This is a helper script for enabling VMs in a vCenter in batch. The script will 
   deployments-<timestamp>/vmw-dep-<timestamp>-<batch>.json - ARM deployment files
   deployments-<timestamp>/all-summary.csv - summary of the VMs enabled
 
-Before running this script, please install az cli and the connectedvmware extension.
+Before running this script, please install az cli and the extensions: connectedvmware and resource-graph.
 az extension add --name connectedvmware
+az extension add --name resource-graph
 
 The script can be run as a cronjob to enable all VMs in a vCenter.
 You can use a service principal for authenticating to azure for this automation. Please refer to the following documentation for more details:
@@ -43,6 +44,9 @@ If this switch is specified, the script will enable guest management on the VMs.
 .PARAMETER VMCredential
 The credentials to be used for enabling guest management on the VMs. If not specified, the script will prompt for the credentials.
 
+.PARAMETER VMCredsFile
+If UseSavedCredentials is used, by default the script will read the VM credentials from `.do-not-reveal-vm-credentials.xml` file in the script directory. If you want to use a different file, you can specify the file path using this parameter.
+
 .PARAMETER UseSavedCredentials
 If this switch is specified, the script will use the saved credentials from the last run. If not specified, the script will prompt for the credentials. This is useful when you are running the script as a cronjob.
 
@@ -51,6 +55,36 @@ If this switch is specified, the script will deploy the created ARM templates. I
 
 .PARAMETER UseDiscoveredInventory
 By default, if the VM Inventory File is not provided, the script generates the VM Inventory file by running azure resource graph query. The exported inventory VM data (CSV or JSON) can be filtered and split into multiple files as per the requirement. For each file, we'll use a single user account to enable the VMs to Arc. If this switch is specified, the script will use the generated VM inventory file for enabling the VMs and guest management. This param cannot be specified along with VMInventoryFile.
+
+.EXAMPLE
+.\arcvmware-batch-enablement.ps1 -VCenterId "/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter" -EnableGuestManagement
+
+This command will generate the VM Inventory file, and exit.
+
+.EXAMPLE
+.\arcvmware-batch-enablement.ps1 -VCenterId "/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter" -EnableGuestManagement -UseDiscoveredInventory
+
+This command will generate the VM Inventory file, and use this inventory to generate the ARM templates. But it will not deploy the ARM templates.
+
+.EXAMPLE
+.\arcvmware-batch-enablement.ps1 -VCenterId "/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter" -EnableGuestManagement -UseDiscoveredInventory -Execute
+
+This command will enable all VMs in the vCenter specified in the VCenterId parameter. It will also enable guest management on the VMs. The script will deploy the created ARM templates.
+
+.EXAMPLE
+.\arcvmware-batch-enablement.ps1 -VCenterId "/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter" -EnableGuestManagement -UseDiscoveredInventory -UseSavedCredentials -Execute
+
+This command will enable all VMs in the vCenter specified in the VCenterId parameter. It will also enable guest management on the VMs. The script will use the saved credentials from the last run. It will deploy the created ARM templates.
+
+.EXAMPLE
+.\arcvmware-batch-enablement.ps1 -VCenterId "/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter"  -EnableGuestManagement -VMInventoryFile "vms.csv" -VMCredsFile "vm-creds.xml" -Execute
+
+This command will enable all VMs in the vCenter specified in the VCenterId parameter. It will also enable guest management on the VMs. The script will read the list of VMs from the VMInventoryFile and deploy the created ARM templates. It will use the credentials from the VMCredsFile.
+
+.EXAMPLE
+.\arcvmware-batch-enablement.ps1 -VCenterId "/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter" -VMInventoryFile "vms.csv" -EnableGuestManagement -Execute
+
+This command will enable all VMs in the vCenter specified in the VCenterId parameter. It will also enable guest management on the VMs. The script will read the list of VMs from the VMInventoryFile and deploy the created ARM templates.
 
 #>
 param(
@@ -62,6 +96,7 @@ param(
   [switch]$EnableGuestManagement,
   [string]$ProxyUrl,
   [PSCredential]$VMCredential,
+  [string]$VMCredsFile,
   [switch]$UseSavedCredentials,
   [switch]$Execute,
   [switch]$UseDiscoveredInventory
@@ -91,7 +126,7 @@ $deploymentFolderPath = Join-Path $PSScriptRoot -ChildPath "deployments-$StartTi
 $deploymentUrlsFilePath = Join-Path $deploymentFolderPath -ChildPath "all-deployments.txt"
 $deploymentSummaryFilePath = Join-Path $deploymentFolderPath -ChildPath "all-summary.csv"
 $azDebugLog = Join-Path $deploymentFolderPath -ChildPath "az-debug.log"
-$vmCredsPath = Join-Path $PSScriptRoot -ChildPath ".do-not-reveal-vm-credentials.xml"
+$defaultVMCredsPath = Join-Path $PSScriptRoot -ChildPath ".do-not-reveal-vm-credentials.xml"
 
 function LogText {
   param(
@@ -480,12 +515,15 @@ LogText "Found $($attemptedVMs.Length) VMs in the inventory file."
 LogText "Found $($vmInventoryList.Length) VMs in the vCenter inventory, will only enable those which are present in the inventory file."
 
 if ($EnableGuestManagement -and !$VMCredential) {
-  if ($UseSavedCredentials -and (Test-Path $vmCredsPath)) {
-    $VMCredential = Import-Clixml -Path $vmCredsPath
+  if (!$VMCredsFile) {
+    $VMCredsFile = $defaultVMCredsPath
+  }
+  if ($UseSavedCredentials -and (Test-Path $VMCredsFile)) {
+    $VMCredential = Import-Clixml -Path $VMCredsFile
   }
   else {
     $VMCredential = Get-Credential -Message "Enter the VM credentials for enabling guest management"
-    $VMCredential | Export-Clixml -Path $vmCredsPath -NoClobber -Force -Encoding UTF8
+    $VMCredential | Export-Clixml -Path $VMCredsFile -NoClobber -Force -Encoding UTF8
   }
 }
 

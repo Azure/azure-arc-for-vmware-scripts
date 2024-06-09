@@ -7,6 +7,14 @@ The script can be run on PowerShell (Windows) or PowerShell Core (Windows, Linux
 
 If you are behind an HTTP proxy, you can run the script [ps-http-proxy.ps1](./ps-http-proxy.ps1) to set the proxy environment for the current PowerShell window.
 
+## CLI parameters
+
+You can get help on the various paramaters, their usage, and examples by running the following command:
+
+```powershell
+Get-Help .\arcvmware-batch-enablement.ps1 -Detailed
+```
+
 ## Step 1
 
 If you have multiple set of user accounts for the VMs, you need to split your inventory into different groups. For each group, we use a single user account to install guest agent on the VMs.
@@ -41,12 +49,14 @@ Run the script [arcvmware-batch-enablement.ps1](./arcvmware-batch-enablement.ps1
 First, you can run it in default mode to check the summary of the azure operations that will be performed. If you are satisfied with the summary, you can re-run the script with the `-Execute` switch to perform the azure operations.
 
 > [!IMPORTANT]
-> The VMInventoryFile needs to have at least the following columns:
-> - vmName
-> - moRefId
+> 1. The VMInventoryFile needs to have at least the following columns:
+>   - vmName
+>   - moRefId
+> 2. By default, we run in dry-run mode. To execute the operations, you need to run the script with the `-Execute` switch.
+> 3. If Guest management is enabled, the script with create the following files in the script's directory:
+>   - `.do-not-reveal-guestvm-credential.json`: This is the ARM template parameter file that contains the credentials for the VMs. Please do not share this file with anyone.
+>   - `.do-not-reveal-vm-credentials.xml`: The PSCredential object VMCredential is exported as XML to this file. Please do not share this file with anyone. The creds from this file are re-used if `-UseSavedCredentials` is passed in the subsequent runs. This is useful while using the script as a cron job.
 
-> [!IMPORTANT]
-> By default, we run in dry-run mode. To execute the operations, you need to run the script with the `-Execute` switch.
 
 ```powershell
 ./arcvmware-batch-enablement.ps1 -VCenterId /subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter -EnableGuestManagement -VMInventoryFile vms.json
