@@ -130,11 +130,11 @@ To generate the inventory of VMs, you can run the script without any `-VMInvento
 <table>
     <tr>
         <td>vmName</td>
-        <td>contoso-sql-01</td>
+        <td>DC0_H0_VM15</td>
     </tr>
     <tr>
         <td>moRefId</td>
-        <td>vm-73310</td>
+        <td>vm-100</td>
     </tr>
     <tr>
         <td>connectionState</td>
@@ -154,7 +154,7 @@ To generate the inventory of VMs, you can run the script without any `-VMInvento
     </tr>
     <tr>
         <td>hostName</td>
-        <td>WIN-JO1RIMVUIC5</td>
+        <td>WIN-CONTOSO</td>
     </tr>
     <tr>
         <td>powerState</td>
