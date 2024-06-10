@@ -17,6 +17,10 @@ Get-Help .\arcvmware-batch-enablement.ps1 -Detailed
 
 ## Step 1
 
+> [!NOTE]
+> If all the VMs in your vCenter use the same user account, you can skip **Step 1** and **Step 2** and directly run the script in **Step 3** with the `-UseDiscoveredInventory` switch.
+> `./arcvmware-batch-enablement.ps1 -VCenterId /subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter -EnableGuestManagement -UseDiscoveredInventory`
+
 If you have multiple set of user accounts for the VMs, you need to split your inventory into different groups. For each group, we use a single user account to install guest agent on the VMs.
 To generate the inventory of VMs, you can run the script without any `-VMInventoryFile` parameter. The script will generate the inventory by running Azure Resource Graph (ARG) query.
 
@@ -24,10 +28,153 @@ To generate the inventory of VMs, you can run the script without any `-VMInvento
 ./arcvmware-batch-enablement.ps1 -VCenterId /subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter -EnableGuestManagement
 ```
 
-> [!NOTE]
-> If all the VMs in your vCenter use the same user account, you can skip **Step 1** and **Step 2** and directly run the script in **Step 3** with the `-UseDiscoveredInventory` switch.
-> `./arcvmware-batch-enablement.ps1 -VCenterId /subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter -EnableGuestManagement -UseDiscoveredInventory`
+<details>
+    <summary>Click to view a sample VM inventory entry generated using ARG</summary>
 
+<table>
+    <tr>
+        <td>azureEnabled</td>
+        <td>Yes</td>
+    </tr>
+    <tr>
+        <td>cluster</td>
+        <td></td>
+    </tr>
+    <tr>
+        <td>guestAgentEnabled</td>
+        <td>No</td>
+    </tr>
+    <tr>
+        <td>host</td>
+        <td>contoso-host</td>
+    </tr>
+    <tr>
+        <td>id</td>
+        <td>/subscriptions/204898ee-cd13-4332-b9d4-55ca5c25496d/resourceGroups/snaskar-rg/providers/Microsoft.ConnectedVMwarevSphere/VCenters/snaskar-appl-ga-vc-scale-10k/InventoryItems/vm-100</td>
+    </tr>
+    <tr>
+        <td>inventoryType</td>
+        <td>VirtualMachine</td>
+    </tr>
+    <tr>
+        <td>ipAddresses</td>
+        <td>[&quot;172.16.2.30&quot;]</td>
+    </tr>
+    <tr>
+        <td>managedResourceId</td>
+        <td>/subscriptions/204898ee-cd13-4332-b9d4-55ca5c25496d/resourcegroups/snaskar-scale-rg/providers/microsoft.hybridcompute/machines/dc0-h0-vm15/providers/microsoft.connectedvmwarevsphere/virtualmachineinstances/default</td>
+    </tr>
+    <tr>
+        <td>moName</td>
+        <td>DC0_H0_VM15</td>
+    </tr>
+    <tr>
+        <td>moRefId</td>
+        <td>vm-100</td>
+    </tr>
+    <tr>
+        <td>osName</td>
+        <td>otherGuest</td>
+    </tr>
+    <tr>
+        <td>powerState</td>
+        <td>poweredon</td>
+    </tr>
+    <tr>
+        <td>resourceGroup</td>
+        <td>snaskar-rg</td>
+    </tr>
+    <tr>
+        <td>resourcePool</td>
+        <td>contoso-respool</td>
+    </tr>
+    <tr>
+        <td>toolsRunningStatus</td>
+        <td>Running</td>
+    </tr>
+    <tr>
+        <td>toolsSummary</td>
+        <td>Running, Version: 11297, (Upgrade available)</td>
+    </tr>
+    <tr>
+        <td>toolsVersion</td>
+        <td>11297</td>
+    </tr>
+    <tr>
+        <td>toolsVersionStatus</td>
+        <td>Upgrade available</td>
+    </tr>
+    <tr>
+        <td>virtualHardwareManagement</td>
+        <td>Enabled</td>
+    </tr>
+    <tr>
+        <td>vmName</td>
+        <td>DC0_H0_VM15</td>
+    </tr>
+</table>
+
+</details>
+
+<br/>
+
+> [!NOTE] If you want to extract and filter using some VM properties which are visible in the vCenter, but not available in Azure, you can use `PowerCLI` or `govc` to fetch the data directly using VMWare VSphere APIs. Run the script [powercli-export-vms.ps1](./powercli-export-vms.ps1) to export the VM data from vCenter.
+
+```powershell
+.\export-vcenter-vms.ps1 -vCenterAddress vcenter.contoso.com
+```
+
+<details>
+    <summary>Click to view a sample VM inventory entry generated using PowerCLI or govc</summary>
+
+<table>
+    <tr>
+        <td>vmName</td>
+        <td>contoso-sql-01</td>
+    </tr>
+    <tr>
+        <td>moRefId</td>
+        <td>vm-73310</td>
+    </tr>
+    <tr>
+        <td>connectionState</td>
+        <td>connected</td>
+    </tr>
+    <tr>
+        <td>guestId</td>
+        <td>windows2019srvNext_64Guest</td>
+    </tr>
+    <tr>
+        <td>guestFamily</td>
+        <td>windowsGuest</td>
+    </tr>
+    <tr>
+        <td>guestFullName</td>
+        <td>Microsoft Windows Server 2022 (64-bit)</td>
+    </tr>
+    <tr>
+        <td>hostName</td>
+        <td>WIN-JO1RIMVUIC5</td>
+    </tr>
+    <tr>
+        <td>powerState</td>
+        <td>poweredOn</td>
+    </tr>
+    <tr>
+        <td>toolsVersion</td>
+        <td>12352</td>
+    </tr>
+    <tr>
+        <td>toolsVersionStatus</td>
+        <td>guestToolsSupportedOld</td>
+    </tr>
+    <tr>
+        <td>toolsRunningStatus</td>
+        <td>guestToolsRunning</td>
+    </tr>
+</table>
+
+</details>
 
 ## Step 2
 

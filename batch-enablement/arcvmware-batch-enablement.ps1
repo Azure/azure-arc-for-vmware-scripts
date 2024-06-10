@@ -311,10 +311,10 @@ $deploymentTemplate = @{
 #StartRegion: ARG Query
 
 if ($EnableGuestManagement) {
-  $filterQuery = "`n" + '| where  virtualHardwareManagement in ("Enabled", "Disabled") and guestAgentEnabled == "No" and powerState == "poweredon" and toolsRunningStatus != "Not running" '
+  $filterQuery = "`n" + '| where  virtualHardwareManagement in ("Enabled", "Disabled") and guestAgentEnabled == "No" and powerState == "poweredon" and isnotempty(toolsRunningStatus) and toolsRunningStatus != "Not running"'
 } else {
   # We do not include old resource type VMs and Link to vCenter VMs in the result.
-  $filterQuery = "`n" + '| where  virtualHardwareManagement in ("Enabled", "Disabled") '
+  $filterQuery = "`n" + '| where  virtualHardwareManagement in ("Enabled", "Disabled")'
 }
 if ($ARGFilter) {
   $filterQuery += "`n" + $ARGFilter
