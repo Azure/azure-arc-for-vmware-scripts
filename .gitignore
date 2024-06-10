@@ -3,4 +3,6 @@
 **/deployments-*
 **/.do-not-reveal-*
 **/*.log
-**/vms.*
+**/*vms.*
+**/creds/
+**/arg-query.kql
