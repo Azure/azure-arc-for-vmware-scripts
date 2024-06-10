@@ -123,6 +123,8 @@ $VCenterIdFormat = "/subscriptions/12345678-1234-1234-1234-1234567890ab/resource
 
 $VMWARE_RP_NAMESPACE = "Microsoft.ConnectedVMwarevSphere"
 
+$ARGPortalBlade = "https://portal.azure.com/#view/HubsExtension/ArgQueryBlade"
+
 function Get-TimeStamp {
   return (Get-Date).ToUniversalTime().ToString("[yyyy-MM-ddTHH:mm:ss.fffZ]")
 }
@@ -135,6 +137,7 @@ $deploymentUrlsFilePath = Join-Path $deploymentFolderPath -ChildPath "all-deploy
 $deploymentSummaryFilePath = Join-Path $deploymentFolderPath -ChildPath "all-summary.csv"
 $azDebugLog = Join-Path $deploymentFolderPath -ChildPath "az-debug.log"
 $defaultVMCredsPath = Join-Path $PSScriptRoot -ChildPath ".do-not-reveal-vm-credentials.xml"
+$ARGQueryDumpFile = Join-Path $PSScriptRoot -ChildPath "arg-query.kql"
 
 function CreateDeploymentFolder {
   if (!(Test-Path $deploymentFolderPath)) {
@@ -308,13 +311,13 @@ $deploymentTemplate = @{
 #StartRegion: ARG Query
 
 if ($EnableGuestManagement) {
-  $filterQuery = ' | where  virtualHardwareManagement in ("Enabled", "Disabled") and guestAgentEnabled == "No" and powerState == "poweredon" and toolsRunningStatus != "Not running" '
+  $filterQuery = "`n" + '| where  virtualHardwareManagement in ("Enabled", "Disabled") and guestAgentEnabled == "No" and powerState == "poweredon" and toolsRunningStatus != "Not running" '
 } else {
   # We do not include old resource type VMs and Link to vCenter VMs in the result.
-  $filterQuery = ' | where  virtualHardwareManagement in ("Enabled", "Disabled") '
+  $filterQuery = "`n" + '| where  virtualHardwareManagement in ("Enabled", "Disabled") '
 }
 if ($ARGFilter) {
-  $filterQuery += $ARGFilter
+  $filterQuery += "`n" + $ARGFilter
 }
 
 $argQuery = @"
@@ -472,9 +475,8 @@ if (!$VMInventoryFile) {
 
   LogText "Running resource graph query to generate the VM inventory file. This might take a while if you have a large number of VMs."
   if (!$Execute) {
-    $ARGQueryDumpFile = Join-Path $PSScriptRoot -ChildPath "arg-query.kql"
     $ARGQuery | Out-File -FilePath $ARGQueryDumpFile -Encoding UTF8
-    LogText "The query has been saved to $ARGQueryDumpFile . You can run the query manually at https://portal.azure.com/#view/HubsExtension/ArgQueryBlade"
+    LogText "The query has been saved to $ARGQueryDumpFile . You can run the query manually at $ARGPortalBlade"
   }
 
   $vms = @()
@@ -484,6 +486,14 @@ if (!$VMInventoryFile) {
     }
     else {
       $page = az graph query -q $query --debug 2>> $logFile | ConvertFrom-Json
+      if (!$page) {
+        $msg = "Failed to run the ARG query. Please check the log file for more details."
+        if ($ARGFilter) {
+          $msg += " Make sure the ARGFilter is correct. For verification, you can run the query present in the file $ARGQueryDumpFile manually at $ARGPortalBlade"
+        }
+        LogError $msg
+        exit
+      }
       LogText "Total number of VMs found using ARG: $($page.total_records)"
     }
     $page.data | ForEach-Object {
