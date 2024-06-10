@@ -5,7 +5,7 @@ The script can be run on PowerShell (Windows) or PowerShell Core (Windows, Linux
 
 ## Behind HTTP Proxy
 
-If you are behind an HTTP proxy, you can run the script [ps-http-proxy.ps1](./ps-http-proxy.ps1) to set the proxy environment for the current PowerShell window.
+If you are behind an HTTP proxy, you can run the script [`ps-http-proxy.ps1`](./ps-http-proxy.ps1) to set the proxy environment for the current PowerShell window.
 
 ## CLI parameters
 
@@ -118,10 +118,11 @@ To generate the inventory of VMs, you can run the script without any `-VMInvento
 
 <br/>
 
-> [!NOTE] If you want to extract and filter using some VM properties which are visible in the vCenter, but not available in Azure, you can use `PowerCLI` or `govc` to fetch the data directly using VMWare VSphere APIs. Run the script [powercli-export-vms.ps1](./powercli-export-vms.ps1) to export the VM data from vCenter.
+> [!NOTE]
+> If you want to extract and filter using some VM properties which are visible in the vCenter, but not available in Azure, you can use `PowerCLI` or `govc` to fetch the data directly using VMWare VSphere APIs. Run the script [`powercli-export-vms.ps1`](./powercli-export-vms.ps1) to export the VM data from vCenter.
 
 ```powershell
-.\export-vcenter-vms.ps1 -vCenterAddress vcenter.contoso.com
+.\powercli-export-vms.ps1 -vCenterAddress vcenter.contoso.com
 ```
 
 <details>

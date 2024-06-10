@@ -17,11 +17,11 @@ For each VM, it exports the following properties:
 The script asks for the credentials interactively if they are not provided as parameters.
 The data is exported in CSV and JSON formats in the same directory as the script.
 .EXAMPLE
-.\export-vcenter-vms.ps1
+.\powercli-export-vms.ps1
 .EXAMPLE
-.\export-vcenter-vms.ps1 -vCenterAddress vcenter.contoso.com
+.\powercli-export-vms.ps1 -vCenterAddress vcenter.contoso.com
 .EXAMPLE
-.\export-vcenter-vms.ps1 -vCenterAddress vcenter.contoso.com -vCenterCredential (Get-Credential)
+.\powercli-export-vms.ps1 -vCenterAddress vcenter.contoso.com -vCenterCredential (Get-Credential)
 .PARAMETER vCenterAddress
 The address of the vCenter server (e.g. vcenter.contoso.com, 1.2.3.4). Please do not include https:// or trailing slash.
 .PARAMETER vCenterCredential
