@@ -98,7 +98,7 @@ Unregister-ScheduledTask -TaskName "EnableVMsAdvanced"
 
 ### ARG Query Filter
 
-If `-UseDiscoveredInventory` param is provided, we fetch the inventory VMs which are potential candidates for the current operation using Azure Resource Graph (ARG) query. When the script is run with the `-UseDiscoveredInventory` flag but without the `-Execute` flag, it will save the ARG query which was used to fetch the inventory VMs in a file named `arg-query.kql`. You can run this query and delve into advanced queries with extra filters by running the query in the Azure Resource Graph Explorer at [https://portal.azure.com/#view/HubsExtension/ArgQueryBlade](https://portal.azure.com/#view/HubsExtension/ArgQueryBlade).
+If `-UseDiscoveredInventory` param is provided, we fetch the inventory VMs which are potential candidates for the current operation using Azure Resource Graph (ARG) query. When the script is run without the `-Execute` flag, it will save the ARG query which was used to fetch the inventory VMs in a file named `arg-query.kql`. You can run this query and delve into advanced queries with extra filters by running the query in the Azure Resource Graph Explorer at [https://portal.azure.com/#view/HubsExtension/ArgQueryBlade](https://portal.azure.com/#view/HubsExtension/ArgQueryBlade).
 
 You can use the `-ARGFilter` parameter along with `-UseDiscoveredInventory` to filter the VMs based on the query. The query should be a KQL query substring. Below are some sample queries:
 
