@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
 This is a helper script for enabling VMs in a vCenter in batch. The script will create the following files:
-  vmware-batch.log - log file
+  arcvmware-batch-enablement.log - log file
   deployments-<timestamp>/all-deployments-<timestamp>.txt - list of Azure portal links to all deployments created
   deployments-<timestamp>/vmw-dep-<timestamp>-<batch>.json - ARM deployment files
   deployments-<timestamp>/all-summary.csv - summary of the VMs enabled
@@ -18,7 +18,7 @@ az login --service-principal --username <clientId> --password <clientSecret> --t
 
 Following is a sample powershell script to run the script as a cronjob:
 
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-File "C:\Path\To\vmware-batch-enable.ps1" -VCenterId "/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter" -EnableGuestManagement -Execute' # Adjust the parameters as needed
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-File "C:\Path\To\arcvmware-batch-enablement.ps1" -VCenterId "/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter" -EnableGuestManagement -Execute' # Adjust the parameters as needed
 $trigger = New-ScheduledTaskTrigger -Daily -At 3am  # Adjust the schedule as needed
 
 Register-ScheduledTask -Action $action -Trigger $trigger -TaskName "EnableVMs"
@@ -56,6 +56,10 @@ If this switch is specified, the script will deploy the created ARM templates. I
 .PARAMETER UseDiscoveredInventory
 By default, if the VM Inventory File is not provided, the script generates the VM Inventory file by running azure resource graph query. The exported inventory VM data (CSV or JSON) can be filtered and split into multiple files as per the requirement. For each file, we'll use a single user account to enable the VMs to Arc. If this switch is specified, the script will use the generated VM inventory file for enabling the VMs and guest management. This param cannot be specified along with VMInventoryFile.
 
+.PARAMETER ARGFilter
+The filter to be used in the ARG query to filter the VMs. This is an advanced parameter and should be used with caution. Make sure to check the generated inventory file before running with -Execute switch. This parameter is useful when you want to run a cronjob with -UseDiscoveredInventory switch, and you want to filter the VMs based on some criteria. For sample filters, refer to the 'Advanced Cron Job' section in the README.
+
+
 .EXAMPLE
 .\arcvmware-batch-enablement.ps1 -VCenterId "/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter" -EnableGuestManagement
 
@@ -86,6 +90,9 @@ This command will enable all VMs in the vCenter specified in the VCenterId param
 
 This command will enable all VMs in the vCenter specified in the VCenterId parameter. It will also enable guest management on the VMs. The script will read the list of VMs from the VMInventoryFile and deploy the created ARM templates.
 
+.EXAMPLE
+.\arcvmware-batch-enablement.ps1 -VCenterId "/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter" -EnableGuestManagement -UseDiscoveredInventory -UseSavedCredentials -ARGFilter "| where osName contains 'Windows' and toolsVersion > 11365 and ipAddresses hasprefix '172.'"
+
 #>
 param(
   [Parameter(Mandatory = $true)]
@@ -95,6 +102,7 @@ param(
   [string]$ResourceGroup,
   [switch]$EnableGuestManagement,
   [string]$ProxyUrl,
+  [string]$ARGFilter,
   [PSCredential]$VMCredential,
   [string]$VMCredsFile,
   [switch]$UseSavedCredentials,
@@ -128,6 +136,11 @@ $deploymentSummaryFilePath = Join-Path $deploymentFolderPath -ChildPath "all-sum
 $azDebugLog = Join-Path $deploymentFolderPath -ChildPath "az-debug.log"
 $defaultVMCredsPath = Join-Path $PSScriptRoot -ChildPath ".do-not-reveal-vm-credentials.xml"
 
+function CreateDeploymentFolder {
+  if (!(Test-Path $deploymentFolderPath)) {
+    New-Item -ItemType Directory -Path $deploymentFolderPath | Out-Null
+  }
+}
 function LogText {
   param(
     [Parameter(Mandatory = $true)]
@@ -294,17 +307,17 @@ $deploymentTemplate = @{
 
 #StartRegion: ARG Query
 
-if (!$UseDiscoveredInventory) {
-  # Output all VMs in the vCenter inventory
-  $filterQuery = ''
-} elseif ($EnableGuestManagement) {
-  $filterQuery = '| where  virtualHardwareManagement in ("Enabled", "Disabled") and guestAgentEnabled == "No" and powerState == "poweredon" and toolsRunningStatus != "Not running"'
+if ($EnableGuestManagement) {
+  $filterQuery = ' | where  virtualHardwareManagement in ("Enabled", "Disabled") and guestAgentEnabled == "No" and powerState == "poweredon" and toolsRunningStatus != "Not running" '
 } else {
   # We do not include old resource type VMs and Link to vCenter VMs in the result.
-  $filterQuery = '| where  virtualHardwareManagement in ("Enabled", "Disabled")'
+  $filterQuery = ' | where  virtualHardwareManagement in ("Enabled", "Disabled") '
+}
+if ($ARGFilter) {
+  $filterQuery += $ARGFilter
 }
 
-$gmNotEnabledVMsARGQuery = @"
+$argQuery = @"
 connectedVMwarevSphereResources
 | where type =~ 'microsoft.connectedvmwarevsphere/vcenters/inventoryitems' and kind =~ 'virtualmachine'
 | where id startswith '${VCenterId}/InventoryItems'
@@ -360,7 +373,8 @@ connectedVMwarevSphereResources
     linkToVCenter, "Link to vCenter",
     "Disabled")
 | extend vmName = moName
-| extend ipAddresses=tostring(ipAddresses)${filterQuery}
+| extend toolsVersion = toint(toolsVersion)${filterQuery}
+| extend ipAddresses=tostring(ipAddresses)
 | project id, moName, moRefId, inventoryType, azureEnabled, virtualHardwareManagement, guestAgentEnabled, powerState, toolsSummary, toolsRunningStatus, toolsVersionStatus, toolsVersion, osName, ipAddresses, host, cluster, resourcePool, managedResourceId, resourceGroup, vmName
 "@
 
@@ -375,7 +389,9 @@ Starting script with the following parameters:
   SubscriptionId: $SubscriptionId
   ResourceGroup: $ResourceGroup
   ProxyUrl: $ProxyUrl
+  ARGFilter: $ARGFilter
   Execute: $Execute
+  UseSavedCredentials: $UseSavedCredentials
   UseDiscoveredInventory: $UseDiscoveredInventory
 "@
 
@@ -393,73 +409,6 @@ LogText "Installing or upgrading the required Azure CLI extensions"
 
 if (!(az extension show --name connectedvmware -o json)) {
   az extension add --allow-preview false --upgrade --name connectedvmware
-}
-
-# if VMInventoryFile is not specified, we generate it
-if (!$VMInventoryFile) {
-  if (!(az extension show --name resource-graph -o json)) {
-    az extension add --allow-preview false --upgrade --name resource-graph
-  }
-
-  if ($EnableGuestManagement) {
-    LogText "Enabling and installing guest agent on the VMs which are powered on and have VMware Tools running."
-  } else {
-    LogText "Enabling the VMs which are not enabled in Azure."
-  }
-
-  $OutFileCSV = Join-Path -Path $PSScriptRoot -ChildPath "vms.csv"
-  $OutFileJSON = Join-Path -Path $PSScriptRoot -ChildPath "vms.json"
-  # run arg query to get the VMs
-  $skipToken = $null
-
-  $query = $gmNotEnabledVMsARGQuery
-  $query = $query.Replace("`r`n", " ").Replace("`n", " ")
-
-  LogText "Running resource graph query to generate the VM inventory file."
-  $vms = @()
-  while ($true) {
-    if ($skipToken) {
-      $page = az graph query --skip-token $skipToken -q $query --debug 2>> $logFile | ConvertFrom-Json
-    }
-    else {
-      $page = az graph query -q $query --debug 2>> $logFile | ConvertFrom-Json
-    }
-    $page.data | ForEach-Object {
-      $vms += $_
-    }
-    if ($null -eq $page.skip_token) {
-      break
-    }
-    $skipToken = $page.skip_token
-  }
-
-  LogText "Found $($vms.Length) VMs in the vCenter inventory."
-  $vms | ConvertTo-Json -Depth 30 | Out-File -FilePath $OutFileJSON -Encoding UTF8
-  $vms | Export-Csv -Path $OutFileCSV -NoTypeInformation
-  LogText "VM inventory saved to $OutFileJSON and $OutFileCSV."
-  if (!$UseDiscoveredInventory) {
-    LogText "Please review the inventory file, and filter and split into groups as needed. For each file, we'll use a single user account to install guest management. If you want to enable all the discovered VMs, please run the script with the -UseDiscoveredInventory switch."
-    exit
-  }
-  LogText "Using the generated VM inventory file for enabling the VMs."
-  $VMInventoryFile = $OutFileCSV
-}
-
-if (!(Test-Path $VMInventoryFile -PathType Leaf)) {
-  LogError "VMInventoryFile not found: $VMInventoryFile"
-  exit
-}
-
-$attemptedVMs = $null
-if ($VMInventoryFile -match "\.csv$") {
-  $attemptedVMs = Import-Csv -Path $VMInventoryFile
-}
-elseif ($VMInventoryFile -match "\.json$") {
-  $attemptedVMs = Get-Content -Path $VMInventoryFile | ConvertFrom-Json
-}
-else {
-  LogError "Invalid VMInventoryFile: $VMInventoryFile. Expected file format: CSV or JSON."
-  exit
 }
 
 $vcInfo = Get-ARMPartsFromID $VCenterId
@@ -500,6 +449,80 @@ $location = $vcenterProps.location
 
 LogText "Extracted custom location: $customLocationId"
 LogText "Extracted location: $location"
+
+# if VMInventoryFile is not specified, we generate it
+if (!$VMInventoryFile) {
+  if (!(az extension show --name resource-graph -o json)) {
+    az extension add --allow-preview false --upgrade --name resource-graph
+  }
+
+  if ($EnableGuestManagement) {
+    LogText "Enabling and installing guest agent on the VMs which are powered on and have VMware Tools running."
+  } else {
+    LogText "Enabling the VMs which are not enabled in Azure."
+  }
+
+  $OutFileCSV = Join-Path -Path $PSScriptRoot -ChildPath "$($vCenterName)-vms.csv"
+  $OutFileJSON = Join-Path -Path $PSScriptRoot -ChildPath "$($vCenterName)-vms.json"
+  # run arg query to get the VMs
+  $skipToken = $null
+
+  $query = $ARGQuery
+  $query = $query.Replace("`r`n", " ").Replace("`n", " ")
+
+  LogText "Running resource graph query to generate the VM inventory file. This might take a while if you have a large number of VMs."
+  if (!$Execute) {
+    $ARGQueryDumpFile = Join-Path $PSScriptRoot -ChildPath "arg-query.kql"
+    $ARGQuery | Out-File -FilePath $ARGQueryDumpFile -Encoding UTF8
+    LogText "The query has been saved to $ARGQueryDumpFile . You can run the query manually at https://portal.azure.com/#view/HubsExtension/ArgQueryBlade"
+  }
+
+  $vms = @()
+  while ($true) {
+    if ($skipToken) {
+      $page = az graph query --skip-token $skipToken -q $query --debug 2>> $logFile | ConvertFrom-Json
+    }
+    else {
+      $page = az graph query -q $query --debug 2>> $logFile | ConvertFrom-Json
+      LogText "Total number of VMs found using ARG: $($page.total_records)"
+    }
+    $page.data | ForEach-Object {
+      $vms += $_
+    }
+    if ($null -eq $page.skip_token) {
+      break
+    }
+    $skipToken = $page.skip_token
+  }
+
+  LogText "Found $($vms.Length) VMs in the vCenter inventory using ARG."
+  $vms | ConvertTo-Json -Depth 30 | Out-File -FilePath $OutFileJSON -Encoding UTF8
+  $vms | Export-Csv -Path $OutFileCSV -NoTypeInformation
+  LogText "VM inventory saved to $OutFileJSON and $OutFileCSV."
+  if (!$UseDiscoveredInventory) {
+    LogText "Please review the inventory file, and filter and split into groups as needed. For each file, we'll use a single user account to install guest management. If you want to enable all the discovered VMs, please run the script with the -UseDiscoveredInventory switch."
+    exit
+  }
+  LogText "Using the generated VM inventory file for enabling the VMs."
+  $VMInventoryFile = $OutFileCSV
+}
+
+if (!(Test-Path $VMInventoryFile -PathType Leaf)) {
+  LogError "VMInventoryFile not found: $VMInventoryFile"
+  exit
+}
+
+$attemptedVMs = $null
+if ($VMInventoryFile -match "\.csv$") {
+  $attemptedVMs = Import-Csv -Path $VMInventoryFile
+}
+elseif ($VMInventoryFile -match "\.json$") {
+  $attemptedVMs = Get-Content -Path $VMInventoryFile | ConvertFrom-Json
+}
+else {
+  LogError "Invalid VMInventoryFile: $VMInventoryFile. Expected file format: CSV or JSON."
+  exit
+}
 
 $vmInventoryList = az connectedvmware vcenter inventory-item list --subscription $vcInfo.SubscriptionId --resource-group $vcInfo.ResourceGroup --vcenter $vCenterName --query '[?kind == `VirtualMachine`].{moRefId:moRefId, moName:moName, managedResourceId:managedResourceId}' -o json | ConvertFrom-Json
 
@@ -647,13 +670,11 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     $deployment = $deploymentTemplate | ConvertTo-Json -Depth 30 | ConvertFrom-Json
     $deployment.resources = $resources
 
-    if (!(Test-Path $deploymentFolderPath)) {
-      New-Item -ItemType Directory -Path $deploymentFolderPath | Out-Null
-    }
+    CreateDeploymentFolder
 
     $deployArgs = @()
     if ($EnableGuestManagement) {
-      $paramsPath = Join-Path $PSScriptRoot -ChildPath ".do-not-reveal-guestvm-credential.json"
+      $paramsPath = Join-Path $deploymentFolderPath -ChildPath ".do-not-reveal-guestvm-credential.json"
       $parametersTemplate.parameters.guestManagementUsername.value = $VMCredential.UserName
       $parametersTemplate.parameters.guestManagementPassword.value = $VMCredential.GetNetworkCredential().Password
       $parametersTemplate | ConvertTo-Json -Depth 10 | Out-File -FilePath $paramsPath -Encoding UTF8
