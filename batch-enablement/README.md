@@ -262,6 +262,11 @@ You can use the `-ARGFilter` parameter along with `-UseDiscoveredInventory` to f
 .\arcvmware-batch-enablement.ps1 -VCenterId "/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter" -EnableGuestManagement -UseDiscoveredInventory -UseSavedCredentials -ARGFilter "| where osName !in~ ('Windows', 'BSD', 'Photon') and toolsVersion > 10346 | extend ipAddr=ipAddresses | mv-expand ipAddr | where ipv4_is_in_range(tostring(ipAddr), '172.16.18.0/21') | summarize take_any(ipAddr, *) by Name | project-away ipAddr"
 ```
 
+> [!IMPORTANT]
+> [az has quoting issues with PowerShell 5.](https://github.com/Azure/azure-cli/blob/dev/doc/quoting-issues-with-powershell.md)
+> If your ARG query filter has double quotes inside the query, 
+> **please use PowerShell 7 or above**, else the ARG query will fail.
+
 ## Support
 
 If you encounter any issues or have any questions about this script, please open an issue in this repository.

@@ -311,10 +311,10 @@ $deploymentTemplate = @{
 #StartRegion: ARG Query
 
 if ($EnableGuestManagement) {
-  $filterQuery = "`n" + '| where  virtualHardwareManagement in ("Enabled", "Disabled") and guestAgentEnabled == "No" and powerState == "poweredon" and isnotempty(toolsRunningStatus) and toolsRunningStatus != "Not running"'
+  $filterQuery = "`n" + "| where  virtualHardwareManagement in ('Enabled', 'Disabled') and guestAgentEnabled == 'No' and powerState == 'poweredon' and isnotempty(toolsRunningStatus) and toolsRunningStatus != 'Not running'"
 } else {
   # We do not include old resource type VMs and Link to vCenter VMs in the result.
-  $filterQuery = "`n" + '| where  virtualHardwareManagement in ("Enabled", "Disabled")'
+  $filterQuery = "`n" + "| where  virtualHardwareManagement in ('Enabled', 'Disabled')"
 }
 if ($ARGFilter) {
   $filterQuery += "`n" + $ARGFilter
@@ -332,49 +332,49 @@ connectedVMwarevSphereResources
 | extend toolsVersion = tostring(properties.toolsVersion), host = tostring(properties.host.moName), cluster=tostring(properties.cluster.moName)
 | extend resourcePool = tostring(properties.resourcePool.moName), ipAddresses = properties.ipAddresses
 | extend inventoryType = kind
-| extend indexOfVmInstance = indexof(managedResourceId, "/providers/microsoft.connectedvmwarevsphere/virtualmachineinstances/default")
-| extend hasHcrp = indexof(managedResourceId, "microsoft.hybridcompute/machines") > -1
+| extend indexOfVmInstance = indexof(managedResourceId, '/providers/microsoft.connectedvmwarevsphere/virtualmachineinstances/default')
+| extend hasHcrp = indexof(managedResourceId, 'microsoft.hybridcompute/machines') > -1
 | extend hasVmInstance = indexOfVmInstance > -1
 | extend linkToVCenter = hasHcrp and not(hasVmInstance)
-| extend isOldResourceModel = indexof(managedResourceId, "microsoft.connectedvmwarevsphere/virtualmachines") > -1
+| extend isOldResourceModel = indexof(managedResourceId, 'microsoft.connectedvmwarevsphere/virtualmachines') > -1
 | extend isNewResourceModel = hasHcrp and hasVmInstance
 | extend hcrpId = iff(indexOfVmInstance > -1, substring(managedResourceId, 0, indexOfVmInstance), managedResourceId)
 | join kind = leftouter (
     resources
         | where type in~ ('microsoft.hybridcompute/machines', 'microsoft.connectedvmwarevsphere/virtualmachines')
         | extend machineId = tolower(tostring(id))
-        | extend agentVersion = iff(type =~ "microsoft.hybridcompute/machines", properties.agentVersion, properties.guestAgentProfile.agentVersion)
+        | extend agentVersion = iff(type =~ 'microsoft.hybridcompute/machines', properties.agentVersion, properties.guestAgentProfile.agentVersion)
     ) on `$left.hcrpId == `$right.machineId
 | join kind = leftouter (
     connectedVMwarevSphereResources
         | where type =~ 'microsoft.connectedvmwarevsphere/virtualmachineinstances'
         | extend vpshereResourceId = tolower(tostring(id))
     ) on `$left.managedResourceId == `$right.vpshereResourceId
-| extend guestAgentEnabled = iff(isnotempty(agentVersion), "Yes", "No")
+| extend guestAgentEnabled = iff(isnotempty(agentVersion), 'Yes', 'No')
 | extend toolsRunningStatus = case(
-    toolsRunningStatus =~ "guestToolsExecutingScripts", "Starting",
-    toolsRunningStatus =~ "guestToolsRunning", "Running",
-    toolsRunningStatus =~ "guestToolsNotRunning", "Not running",
+    toolsRunningStatus =~ 'guestToolsExecutingScripts', 'Starting',
+    toolsRunningStatus =~ 'guestToolsRunning', 'Running',
+    toolsRunningStatus =~ 'guestToolsNotRunning', 'Not running',
     toolsRunningStatus)
 | extend toolsVersionStatus = case(
-    toolsVersionStatus =~ "guestToolsUnmanaged", "Guest managed",
-    toolsVersionStatus in~ ("guestToolsBlacklisted", "guestToolsTooNew", "guestToolsTooOld"), "Version unsupported",
-    toolsVersionStatus in~ ("guestToolsCurrent", "guestToolsSupportedNew"), "Up to date",
-    toolsVersionStatus in~ ("guestToolsNeedUpgrade", "guestToolsSupportedOld"), "Upgrade available",
-    toolsVersionStatus =~ "guestToolsNotInstalled", "Not installed",
+    toolsVersionStatus =~ 'guestToolsUnmanaged', 'Guest managed',
+    toolsVersionStatus in~ ('guestToolsBlacklisted', 'guestToolsTooNew', 'guestToolsTooOld'), 'Version unsupported',
+    toolsVersionStatus in~ ('guestToolsCurrent', 'guestToolsSupportedNew'), 'Up to date',
+    toolsVersionStatus in~ ('guestToolsNeedUpgrade', 'guestToolsSupportedOld'), 'Upgrade available',
+    toolsVersionStatus =~ 'guestToolsNotInstalled', 'Not installed',
     toolsVersionStatus)
 | extend toolsSummary = case(
-    toolsVersionStatus =~ "Not installed", toolsVersionStatus,
-    isempty(toolsRunningStatus), "Not installed",
+    toolsVersionStatus =~ 'Not installed', toolsVersionStatus,
+    isempty(toolsRunningStatus), 'Not installed',
     isempty(toolsVersion), toolsRunningStatus,
-    isnotempty(toolsVersionStatus), strcat(toolsRunningStatus, ', ', "Version", ': ', toolsVersion, ', ', '(', toolsVersionStatus, ')'),
-    "Not installed")
-| extend azureEnabled = iff(isnotempty(managedResourceId), "Yes", "No")
+    isnotempty(toolsVersionStatus), strcat(toolsRunningStatus, ', ', 'Version', ': ', toolsVersion, ', ', '(', toolsVersionStatus, ')'),
+    'Not installed')
+| extend azureEnabled = iff(isnotempty(managedResourceId), 'Yes', 'No')
 | extend virtualHardwareManagement = case(
-    isnotempty(managedResourceId) and isOldResourceModel, "Enabled (deprecated)",
-    isnotempty(managedResourceId) and isNewResourceModel, "Enabled",
-    linkToVCenter, "Link to vCenter",
-    "Disabled")
+    isnotempty(managedResourceId) and isOldResourceModel, 'Enabled (deprecated)',
+    isnotempty(managedResourceId) and isNewResourceModel, 'Enabled',
+    linkToVCenter, 'Link to vCenter',
+    'Disabled')
 | extend vmName = moName
 | extend toolsVersion = toint(toolsVersion)${filterQuery}
 | extend ipAddresses=tostring(ipAddresses)
@@ -396,6 +396,7 @@ Starting script with the following parameters:
   Execute: $Execute
   UseSavedCredentials: $UseSavedCredentials
   UseDiscoveredInventory: $UseDiscoveredInventory
+  LogFile: $logFile
 "@
 
 if (!(Get-Command az -ErrorAction SilentlyContinue)) {
