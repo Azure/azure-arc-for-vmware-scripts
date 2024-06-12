@@ -170,6 +170,19 @@ function LogError {
   Add-Content -Path $logFile -Value "$(Get-TimeStamp) Error: $Text"
 }
 
+if ($VMCredsFile) {
+  $UseSavedCredentials = $true
+}
+elseif ($UseSavedCredentials) {
+  $VMCredsFile = $defaultVMCredsPath
+}
+if ($VMCredential -or $UseSavedCredentials) {
+  if (!$EnableGuestManagement) {
+    LogText "EnableGuestManagement is implicitly set to true as credentials are provided."
+    $EnableGuestManagement = $true
+  }
+}
+
 function Get-ARMPartsFromID($id) {
   if ($id -match "/+subscriptions/+([^/]+)/+resourceGroups/+([^/]+)/+providers/+([^/]+)/+([^/]+)/+([^/]+)") {
     return @{
@@ -409,6 +422,28 @@ if ($UseDiscoveredInventory -and $VMInventoryFile) {
   exit
 }
 
+function ResolveVMCredsFile {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FilePath
+  )
+  if (Test-Path $FilePath -PathType Leaf) {
+    return $FilePath
+  }
+  $FilePathRelToScript = Join-Path -Path $PSScriptRoot -ChildPath $FilePath
+  if (Test-Path $FilePathRelToScript -PathType Leaf) {
+    return $FilePathRelToScript
+  }
+  LogError "VM credentials file not found at: $FilePath"
+  exit
+}
+
+if ($VMCredsFile) {
+  $VMCredsFile = ResolveVMCredsFile -FilePath $VMCredsFile
+  LogText "Using VM credentials file: $VMCredsFile"
+  $VMCredential = Import-Clixml -Path $VMCredsFile
+}
+
 LogText "Installing or upgrading the required Azure CLI extensions"
 
 if (!(az extension show --name connectedvmware -o json)) {
@@ -535,6 +570,16 @@ else {
   exit
 }
 
+if (!$attemptedVMs) {
+  if ($UseDiscoveredInventory) {
+    LogError "No VMs (matching the criteria) found in the vCenter inventory using ARG."
+  }
+  else {
+    LogError "No VMs found in the inventory file: $VMInventoryFile"
+  }
+  exit
+}
+
 $vmInventoryList = az connectedvmware vcenter inventory-item list --subscription $vcInfo.SubscriptionId --resource-group $vcInfo.ResourceGroup --vcenter $vCenterName --query '[?kind == `VirtualMachine`].{moRefId:moRefId, moName:moName, managedResourceId:managedResourceId}' -o json | ConvertFrom-Json
 
 $moRefId2Inv = @{}
@@ -549,16 +594,8 @@ LogText "Found $($attemptedVMs.Length) VMs in the inventory file."
 LogText "Found $($vmInventoryList.Length) VMs in the vCenter inventory, will only enable those which are present in the inventory file."
 
 if ($EnableGuestManagement -and !$VMCredential) {
-  if (!$VMCredsFile) {
-    $VMCredsFile = $defaultVMCredsPath
-  }
-  if ($UseSavedCredentials -and (Test-Path $VMCredsFile)) {
-    $VMCredential = Import-Clixml -Path $VMCredsFile
-  }
-  else {
-    $VMCredential = Get-Credential -Message "Enter the VM credentials for enabling guest management"
-    $VMCredential | Export-Clixml -Path $VMCredsFile -NoClobber -Force -Encoding UTF8
-  }
+  $VMCredential = Get-Credential -Message "Enter the VM credentials for enabling guest management"
+  $VMCredential | Export-Clixml -Path $VMCredsFile -NoClobber -Force -Encoding UTF8
 }
 
 $uniqueIdx = 0

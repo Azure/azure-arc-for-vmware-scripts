@@ -50,7 +50,7 @@ To generate the inventory of VMs, you can run the script without any `-VMInvento
     </tr>
     <tr>
         <td>id</td>
-        <td>/subscriptions/204898ee-cd13-4332-b9d4-55ca5c25496d/resourceGroups/snaskar-rg/providers/Microsoft.ConnectedVMwarevSphere/VCenters/snaskar-appl-ga-vc-scale-10k/InventoryItems/vm-100</td>
+        <td>/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/VCenters/contoso-vcenter/InventoryItems/vm-100</td>
     </tr>
     <tr>
         <td>inventoryType</td>
@@ -62,7 +62,7 @@ To generate the inventory of VMs, you can run the script without any `-VMInvento
     </tr>
     <tr>
         <td>managedResourceId</td>
-        <td>/subscriptions/204898ee-cd13-4332-b9d4-55ca5c25496d/resourcegroups/snaskar-scale-rg/providers/microsoft.hybridcompute/machines/dc0-h0-vm15/providers/microsoft.connectedvmwarevsphere/virtualmachineinstances/default</td>
+        <td>/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/microsoft.hybridcompute/machines/dc0-h0-vm15/providers/microsoft.connectedvmwarevsphere/virtualmachineinstances/default</td>
     </tr>
     <tr>
         <td>moName</td>
@@ -82,7 +82,7 @@ To generate the inventory of VMs, you can run the script without any `-VMInvento
     </tr>
     <tr>
         <td>resourceGroup</td>
-        <td>snaskar-rg</td>
+        <td>contoso-rg</td>
     </tr>
     <tr>
         <td>resourcePool</td>
@@ -231,6 +231,14 @@ Unregister-ScheduledTask -TaskName "EnableVMs"
 ## Advanced Cron Job
 
 If you have multiple different vCenters, or you want to run with multiple different parameters for different groups of VMs, you can use a script similar to the [advanced-crojob.ps1](./advanced-crojob.ps1) script.
+
+If you have multiple user accounts, you can save the each of the credentials in an XML file.
+You can then pass the XML file path to the script using the `-VMCredsFile` parameter inside the advanced cron job script.
+
+```powershell
+Get-Credential -Message "VM creds group 1" | Export-Clixml -Path contoso-creds-1.xml -NoClobber -Force -Encoding UTF8
+Get-Credential -Message "VM creds group 2" | Export-Clixml -Path contoso-creds-2.xml -NoClobber -Force -Encoding UTF8
+```
 
 ```powershell
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-File "C:\Path\To\advanced-cronjob.ps1"'
