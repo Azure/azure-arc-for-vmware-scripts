@@ -136,8 +136,8 @@ $deploymentFolderPath = Join-Path $PSScriptRoot -ChildPath "deployments-$StartTi
 $deploymentUrlsFilePath = Join-Path $deploymentFolderPath -ChildPath "all-deployments.txt"
 $deploymentSummaryFilePath = Join-Path $deploymentFolderPath -ChildPath "all-summary.csv"
 $azDebugLog = Join-Path $deploymentFolderPath -ChildPath "az-debug.log"
-$defaultVMCredsPath = Join-Path $PSScriptRoot -ChildPath ".do-not-reveal-vm-credentials.xml"
-$ARGQueryDumpFile = Join-Path $PSScriptRoot -ChildPath "arg-query.kql"
+$defaultVMCredsPath = Join-Path $deploymentFolderPath -ChildPath ".do-not-reveal-vm-credentials.xml"
+$ARGQueryDumpFile = Join-Path $deploymentFolderPath -ChildPath "arg-query.kql"
 
 function CreateDeploymentFolder {
   if (!(Test-Path $deploymentFolderPath)) {
@@ -402,6 +402,7 @@ Starting script with the following parameters:
   EnableGuestManagement: $EnableGuestManagement
   VMInventoryFile: $VMInventoryFile
   VMCredential: $VMCredential
+  VMCredsFile: $VMCredsFile
   SubscriptionId: $SubscriptionId
   ResourceGroup: $ResourceGroup
   ProxyUrl: $ProxyUrl
@@ -501,8 +502,13 @@ if (!$VMInventoryFile) {
     LogText "Enabling the VMs which are not enabled in Azure."
   }
 
-  $OutFileCSV = Join-Path -Path $PSScriptRoot -ChildPath "$($vCenterName)-vms.csv"
-  $OutFileJSON = Join-Path -Path $PSScriptRoot -ChildPath "$($vCenterName)-vms.json"
+  $dumpFolder = $PSScriptRoot
+  if ($UseDiscoveredInventory) {
+    $dumpFolder = $deploymentFolderPath
+  }
+  $OutFileCSV = Join-Path -Path $dumpFolder -ChildPath "vms.csv"
+  $OutFileJSON = Join-Path -Path $dumpFolder -ChildPath "vms.json"
+  $ARGQueryDumpFile = Join-Path $dumpFolder -ChildPath "arg-query.kql"
   # run arg query to get the VMs
   $skipToken = $null
 
@@ -510,10 +516,8 @@ if (!$VMInventoryFile) {
   $query = $query.Replace("`r`n", " ").Replace("`n", " ")
 
   LogText "Running resource graph query to generate the VM inventory file. This might take a while if you have a large number of VMs."
-  if (!$Execute) {
-    $ARGQuery | Out-File -FilePath $ARGQueryDumpFile -Encoding UTF8
-    LogText "The query has been saved to $ARGQueryDumpFile . You can run the query manually at $ARGPortalBlade"
-  }
+  $ARGQuery | Out-File -FilePath $ARGQueryDumpFile -Encoding UTF8
+  LogText "The query has been saved to $ARGQueryDumpFile . You can run the query manually at $ARGPortalBlade"
 
   $vms = @()
   while ($true) {
