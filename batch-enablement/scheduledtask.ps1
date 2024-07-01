@@ -34,14 +34,13 @@ $trigger = New-ScheduledTaskTrigger -Daily -At 10am
 # $trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration (New-TimeSpan -Days 1) -Once -At "00:00"
 
 if ($Unregister) {
-  $TaskName = "EnableVMs"
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
   Write-Host "Scheduled task $TaskName unregistered successfully."
   return
 }
 
 if ($Export) {
-  $ExportFile = Join-Path -Path $PSScriptRoot -ChildPath "EnableVMs-ScheduledTask.xml"
+  $ExportFile = Join-Path -Path $PSScriptRoot -ChildPath "$TaskName-ScheduledTask.xml"
   Export-ScheduledTask -TaskName $TaskName | Out-File -FilePath $ExportFile
   Write-Host "Scheduled task $TaskName exported to $ExportFile."
   return
