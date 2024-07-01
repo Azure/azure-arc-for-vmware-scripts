@@ -13,12 +13,16 @@ If this switch is specified, the script will display the last 10 events from the
 
 .PARAMETER Start
 If this switch is specified, the script will start the scheduled task.
+
+.PARAMETER Stop
+If this switch is specified, the script will stop the scheduled task.
 #>
 param(
   [switch]$Unregister,
   [switch]$Export,
   [switch]$Logs,
-  [switch]$Start
+  [switch]$Start,
+  [switch]$Stop
 )
 
 # TODO: Update the task name as needed
@@ -66,6 +70,11 @@ if ($Start) {
   } else {
     Write-Host "Scheduled task $TaskName not found. Please register the task first."
   }
+  return
+}
+
+if ($Stop) {
+  Stop-ScheduledTask -TaskName $TaskName
   return
 }
 
