@@ -210,47 +210,36 @@ First, you can run it in default mode to check the summary of the azure operatio
 ./arcvmware-batch-enablement.ps1 -VCenterId /subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter -EnableGuestManagement -VMInventoryFile vms.json
 ```
 
-## Running as a Cron Job
+## Batch Runner
 
-You can set up this script to run as a cron job using the Windows Task Scheduler. Here's a sample script to create a scheduled task:
-
-```powershell
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-File "C:\Path\To\arcvmware-batch-enablement.ps1" -VCenterId "<vCenterId>" -EnableGuestManagement -UseDiscoveredInventory -UseSavedCredentials -Execute'
-$trigger = New-ScheduledTaskTrigger -Daily -At 3am
-Register-ScheduledTask -Action $action -Trigger $trigger -TaskName "EnableVMs"
-```
-
-Replace `<vCenterId>` with the ARM ID of your vCenter.
-
-To unregister the task, run the following command:
-
-```powershell
-Unregister-ScheduledTask -TaskName "EnableVMs"
-```
-
-## Advanced Cron Job
-
-If you have multiple different vCenters, or you want to run with multiple different parameters for different groups of VMs, you can use a script similar to the [advanced-crojob.ps1](./advanced-crojob.ps1) script.
+If you have multiple different vCenters, or you want to run with multiple different parameters for different groups of VMs, you can use a script similar to the [batch-runner.ps1](./batch-runner.ps1) script.
 
 If you have multiple user accounts, you can save the each of the credentials in an XML file.
-You can then pass the XML file path to the script using the `-VMCredsFile` parameter inside the advanced cron job script.
+You can then pass the XML file path to the script using the `-VMCredsFile` parameter inside the script.
 
 ```powershell
-Get-Credential -Message "VM creds group 1" | Export-Clixml -Path contoso-creds-1.xml -NoClobber -Force -Encoding UTF8
-Get-Credential -Message "VM creds group 2" | Export-Clixml -Path contoso-creds-2.xml -NoClobber -Force -Encoding UTF8
+Get-Credential -Message "VM creds group 1" | Export-Clixml -Path creds-contoso-vcenter-1.xml -NoClobber -Force -Encoding UTF8
+Get-Credential -Message "VM creds group 2" | Export-Clixml -Path creds-contoso-vcenter-2.xml -NoClobber -Force -Encoding UTF8
 ```
+
+## Running as a Cron Job
+
+You can set up the batch runner script to run as a scheduled task (or cronjob) using the Windows Task Scheduler. The file [`scheduledtask.ps1`](./scheduledtask.ps1) can be used to create a scheduled task to run the batch runner script in Windows.
 
 ```powershell
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-File "C:\Path\To\advanced-cronjob.ps1"'
-$trigger = New-ScheduledTaskTrigger -Daily -At 3am
-Register-ScheduledTask -Action $action -Trigger $trigger -TaskName "EnableVMsAdvanced"
+.\scheduledtask.ps1
 ```
 
-To unregister the task, run the following command:
+We can also export the task, check the logs, run and unregister the task using the same script. Check the help for more details.
 
 ```powershell
-Unregister-ScheduledTask -TaskName "EnableVMsAdvanced"
+Get-Help .\scheduledtask.ps1 -Detailed
 ```
+
+> [!IMPORTANT]
+> The default name of the task is EnableVMs.<br/>
+> The default trigger is set to run every day at 10:00 AM.<br/>
+> The defaults can be changed by updating the script.
 
 ### ARG Query Filter
 

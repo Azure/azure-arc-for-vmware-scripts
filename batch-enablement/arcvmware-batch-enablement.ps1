@@ -10,22 +10,6 @@ Before running this script, please install az cli and the extensions: connectedv
 az extension add --name connectedvmware
 az extension add --name resource-graph
 
-The script can be run as a cronjob to enable all VMs in a vCenter.
-You can use a service principal for authenticating to azure for this automation. Please refer to the following documentation for more details:
-https://docs.microsoft.com/en-us/azure/active-directory/develop/howto-create-service-principal-portal
-Then, you can login to azure using the service principal using the following command:
-az login --service-principal --username <clientId> --password <clientSecret> --tenant <tenantId>
-
-Following is a sample powershell script to run the script as a cronjob:
-
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-File "C:\Path\To\arcvmware-batch-enablement.ps1" -VCenterId "/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter" -EnableGuestManagement -Execute' # Adjust the parameters as needed
-$trigger = New-ScheduledTaskTrigger -Daily -At 3am  # Adjust the schedule as needed
-
-Register-ScheduledTask -Action $action -Trigger $trigger -TaskName "EnableVMs"
-
-To unregister the task, run the following command:
-Unregister-ScheduledTask -TaskName "EnableVMs"
-
 .PARAMETER VCenterId
 The ARM ID of the vCenter where the VMs are located. For example: /subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter
 
@@ -136,8 +120,8 @@ $deploymentFolderPath = Join-Path $PSScriptRoot -ChildPath "deployments-$StartTi
 $deploymentUrlsFilePath = Join-Path $deploymentFolderPath -ChildPath "all-deployments.txt"
 $deploymentSummaryFilePath = Join-Path $deploymentFolderPath -ChildPath "all-summary.csv"
 $azDebugLog = Join-Path $deploymentFolderPath -ChildPath "az-debug.log"
-$defaultVMCredsPath = Join-Path $PSScriptRoot -ChildPath ".do-not-reveal-vm-credentials.xml"
-$ARGQueryDumpFile = Join-Path $PSScriptRoot -ChildPath "arg-query.kql"
+$defaultVMCredsPath = Join-Path $deploymentFolderPath -ChildPath ".do-not-reveal-vm-credentials.xml"
+$ARGQueryDumpFile = Join-Path $deploymentFolderPath -ChildPath "arg-query.kql"
 
 function CreateDeploymentFolder {
   if (!(Test-Path $deploymentFolderPath)) {
@@ -402,6 +386,7 @@ Starting script with the following parameters:
   EnableGuestManagement: $EnableGuestManagement
   VMInventoryFile: $VMInventoryFile
   VMCredential: $VMCredential
+  VMCredsFile: $VMCredsFile
   SubscriptionId: $SubscriptionId
   ResourceGroup: $ResourceGroup
   ProxyUrl: $ProxyUrl
@@ -501,8 +486,13 @@ if (!$VMInventoryFile) {
     LogText "Enabling the VMs which are not enabled in Azure."
   }
 
-  $OutFileCSV = Join-Path -Path $PSScriptRoot -ChildPath "$($vCenterName)-vms.csv"
-  $OutFileJSON = Join-Path -Path $PSScriptRoot -ChildPath "$($vCenterName)-vms.json"
+  $dumpFolder = $PSScriptRoot
+  if ($UseDiscoveredInventory) {
+    $dumpFolder = $deploymentFolderPath
+  }
+  $OutFileCSV = Join-Path -Path $dumpFolder -ChildPath "vms.csv"
+  $OutFileJSON = Join-Path -Path $dumpFolder -ChildPath "vms.json"
+  $ARGQueryDumpFile = Join-Path $dumpFolder -ChildPath "arg-query.kql"
   # run arg query to get the VMs
   $skipToken = $null
 
@@ -510,10 +500,8 @@ if (!$VMInventoryFile) {
   $query = $query.Replace("`r`n", " ").Replace("`n", " ")
 
   LogText "Running resource graph query to generate the VM inventory file. This might take a while if you have a large number of VMs."
-  if (!$Execute) {
-    $ARGQuery | Out-File -FilePath $ARGQueryDumpFile -Encoding UTF8
-    LogText "The query has been saved to $ARGQueryDumpFile . You can run the query manually at $ARGPortalBlade"
-  }
+  $ARGQuery | Out-File -FilePath $ARGQueryDumpFile -Encoding UTF8
+  LogText "The query has been saved to $ARGQueryDumpFile . You can run the query manually at $ARGPortalBlade"
 
   $vms = @()
   while ($true) {

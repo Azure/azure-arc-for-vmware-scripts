@@ -1,5 +1,8 @@
+Start-Transcript -Append -Path (Join-Path $PSScriptRoot -ChildPath "batch-runner.log")
 
-$credsFolder = Join-Path $PSScriptRoot -ChildPath "creds"
+# TODO: Update the path to the folder containing the credentials
+$credsFolder = $PSScriptRoot
+
 $batchEnableScriptPath = Join-Path $PSScriptRoot -ChildPath "arcvmware-batch-enablement.ps1"
 
 $RunGroups = @(
@@ -23,19 +26,30 @@ $RunGroups = @(
   }
 )
 
-# Run in parallel
-$RunGroups | ForEach-Object -Parallel {
-  $CredsFilePath = Join-Path $using:credsFolder -ChildPath $_.CredsFileName
-  Write-Host "Running batch enablement for $($_.VCenterId)"
+function RunBatchEnablement {
+  param (
+    [string]$VCenterId,
+    [System.Object]$Rungroup
+  )
+
+  $CredsFilePath = Join-Path $credsFolder -ChildPath $Rungroup.CredsFileName
+  Write-Host "Running batch enablement for $VCenterId"
   $params = @{
-    VCenterId             = $_.VCenterId
+    VCenterId             = $VCenterId
     EnableGuestManagement = $true
     UseDiscoveredInventory = $true
     VMCredsFile           = $CredsFilePath
     # Execute               = $true # TODO: Uncomment to execute
   }
-  if ($_.ARGFilter) {
-    $params.Add("ARGFilter", $_.ARGFilter)
+  if ($ARGFilter) {
+    $params.Add("ARGFilter", $ARGFilter)
   }
-  & $using:batchEnableScriptPath @params
+  & $batchEnableScriptPath @params
 }
+
+Write-Host "Running batch enablement sequentially between rungroups."
+$RunGroups | ForEach-Object {
+  RunBatchEnablement -VCenterId $_.VCenterId -Rungroup $_
+}
+
+Stop-Transcript
