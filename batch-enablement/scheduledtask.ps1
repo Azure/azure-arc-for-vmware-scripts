@@ -1,3 +1,5 @@
+#Requires -RunAsAdministrator
+
 <#
 .SYNOPSIS
 This script can be used in Windows environments to run the batch enablement script as a scheduled task. By default, it will register a scheduled task to run the batch enablement script daily at 9am.
