@@ -10,22 +10,6 @@ Before running this script, please install az cli and the extensions: connectedv
 az extension add --name connectedvmware
 az extension add --name resource-graph
 
-The script can be run as a cronjob to enable all VMs in a vCenter.
-You can use a service principal for authenticating to azure for this automation. Please refer to the following documentation for more details:
-https://docs.microsoft.com/en-us/azure/active-directory/develop/howto-create-service-principal-portal
-Then, you can login to azure using the service principal using the following command:
-az login --service-principal --username <clientId> --password <clientSecret> --tenant <tenantId>
-
-Following is a sample powershell script to run the script as a cronjob:
-
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-File "C:\Path\To\arcvmware-batch-enablement.ps1" -VCenterId "/subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter" -EnableGuestManagement -Execute' # Adjust the parameters as needed
-$trigger = New-ScheduledTaskTrigger -Daily -At 3am  # Adjust the schedule as needed
-
-Register-ScheduledTask -Action $action -Trigger $trigger -TaskName "EnableVMs"
-
-To unregister the task, run the following command:
-Unregister-ScheduledTask -TaskName "EnableVMs"
-
 .PARAMETER VCenterId
 The ARM ID of the vCenter where the VMs are located. For example: /subscriptions/12345678-1234-1234-1234-1234567890ab/resourceGroups/contoso-rg/providers/Microsoft.ConnectedVMwarevSphere/vcenters/contoso-vcenter
 

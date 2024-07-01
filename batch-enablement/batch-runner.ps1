@@ -1,3 +1,5 @@
+Start-Transcript -Append -Path (Join-Path $PSScriptRoot -ChildPath "batch-runner.log")
+
 # TODO: Update the path to the folder containing the credentials
 $credsFolder = $PSScriptRoot
 
@@ -49,3 +51,5 @@ Write-Host "Running batch enablement sequentially between rungroups."
 $RunGroups | ForEach-Object {
   RunBatchEnablement -VCenterId $_.VCenterId -Rungroup $_
 }
+
+Stop-Transcript
