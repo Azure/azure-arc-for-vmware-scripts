@@ -227,7 +227,7 @@ Get-Credential -Message "VM creds group 2" | Export-Clixml -Path creds-contoso-v
 You can set up the batch runner script to run as a scheduled task (or cronjob) using the Windows Task Scheduler. The file [`scheduledtask.ps1`](./scheduledtask.ps1) can be used to create a scheduled task to run the batch runner script in Windows.
 
 > [!NOTE]
-> If your azure account credentials expire within a few hours, you need to do automated login inside the script. There are various ways to do this, like using a service principal, managed identity, etc. Service Principal would be easy to create and use. You can run the script `create-service-principal.ps1` to create a service principal.
+> If your azure account credentials expire within a few hours, you need to do automated login inside the script. There are various ways to do this, like using a service principal, managed identity, etc. Service Principal would be easy to create and use. You can run the script [`create-service-principal.ps1`](./create-service-principal.ps1) to create a service principal.
 
 > [!NOTE]
 > To create a scheduled task, you need to run the script as an administrator.
@@ -247,11 +247,9 @@ Get-Help .\scheduledtask.ps1 -Detailed
 
 ### Known Issues with Scheduled Task
 
-#### 1. If you are getting the follwoing error while creating a scheduled task, we need to allow storage of passwords and credentials for network authentication.
+#### 1. An error has occurred for the task <task name>. Error message: The following error was reported: A specified logon session does not exist. It may have already been terminated..
  
-An error has occurred for the task <task name>. Error message: The following error was reported: A specified logon session does not exist. It may have already been terminated..
-
-To fix this issue, run the following command in an elevated PowerShell window:
+We need to allow storage of passwords and credentials for network authentication:
 
 1. Run the command `secpol.msc` to open the Local Security Policy.
 2. Navigate to `Local Policies` > `Security Options`.
