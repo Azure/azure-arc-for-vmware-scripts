@@ -90,7 +90,7 @@ if (-not (Test-Path -Path $scriptPath)) {
   Write-Host "batch-runner.ps1 not found in $PSScriptRoot. Please ensure the script is present and try again."
   return
 }
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NoLogo -NonInteractive' + " -File $scriptPath") -WorkingDirectory ("$PSScriptRoot")
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NoLogo -NonInteractive' + " -File '$scriptPath'") -WorkingDirectory ("$PSScriptRoot")
 $Settings = New-ScheduledTaskSettingsSet -DontStopOnIdleEnd -StartWhenAvailable -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries -RestartOnIdle -WakeToRun -RunOnlyIfNetworkAvailable
 $Settings.ExecutionTimeLimit = "PT0S"
 $VMCredential = Get-Credential -Message "Enter the user credentials used for running the scheduled task"
