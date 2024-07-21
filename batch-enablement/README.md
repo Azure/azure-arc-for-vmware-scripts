@@ -196,6 +196,10 @@ Before proceeding, please do the following:
 Run the script [arcvmware-batch-enablement.ps1](./arcvmware-batch-enablement.ps1) to enable the VMs to Arc.
 First, you can run it in default mode to check the summary of the azure operations that will be performed. If you are satisfied with the summary, you can re-run the script with the `-Execute` switch to perform the azure operations.
 
+> [!NOTE]
+> To prevent the same failures from happening again, we save the aggregated run history for each VM in a file `last-run.csv`.
+> You can go through the file, perform necessary action on a VM to fix the issue, delete the entry from the file, and re-run the script. 
+
 > [!IMPORTANT]
 > 1. The VMInventoryFile needs to have at least the following columns:
 >   - vmName

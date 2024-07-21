@@ -5,6 +5,7 @@ This is a helper script for enabling VMs in a vCenter in batch. The script will 
   deployments-<timestamp>/all-deployments-<timestamp>.txt - list of Azure portal links to all deployments created
   deployments-<timestamp>/vmw-dep-<timestamp>-<batch>.json - ARM deployment files
   deployments-<timestamp>/all-summary.csv - summary of the VMs enabled
+  last-run.csv - history of attempts to enable in azure and install guest management on VMs
 
 Before running this script, please install az cli and the extensions: connectedvmware and resource-graph.
 az extension add --name connectedvmware
@@ -122,7 +123,11 @@ $deploymentSummaryFilePath = Join-Path $deploymentFolderPath -ChildPath "all-sum
 $azDebugLog = Join-Path $deploymentFolderPath -ChildPath "az-debug.log"
 $defaultVMCredsPath = Join-Path $deploymentFolderPath -ChildPath ".do-not-reveal-vm-credentials.xml"
 $ARGQueryDumpFile = Join-Path $deploymentFolderPath -ChildPath "arg-query.kql"
-
+# Inv2LastRunFile is used to store the history of guest management attempts.
+# A VM which failed in an earlier attempt will not be attempted again unless the entry is deleted from this file.
+$Inv2LastRunFile = Join-Path $PSScriptRoot -ChildPath "last-run.csv"
+$SkippedCount = 0
+$Inv2LastRun = @{}
 function CreateDeploymentFolder {
   if (!(Test-Path $deploymentFolderPath)) {
     New-Item -ItemType Directory -Path $deploymentFolderPath | Out-Null
@@ -152,6 +157,33 @@ function LogError {
   )
   Write-Error "$(Get-TimeStamp) $Text"
   Add-Content -Path $logFile -Value "$(Get-TimeStamp) Error: $Text"
+}
+
+function LoadInv2LastRun {
+  # Load the csv file.
+  if (!(Test-Path $Inv2LastRunFile -PathType Leaf)) {
+    LogDebug "Inv2LastRunFile not found: $Inv2LastRunFile"
+    return
+  }
+  $table = Import-Csv -Path $Inv2LastRunFile
+  for ($i = 0; $i -lt $table.Length; $i++) {
+    $row = $table[$i]
+    $Script:Inv2LastRun[$row.inventoryItemId] = $row
+  }
+  LogDebug "Loaded $($table.Length) entries from Inv2LastRunFile."
+}
+function SaveInv2LastRun {
+  $table = @()
+  foreach ($key in $Inv2LastRun.Keys) {
+    $table += $Inv2LastRun[$key]
+  }
+
+  # Custom ordering of columns and sorting rows
+  $table = $table | Select-Object moName, gmErrorCode, vmName, moRefId, correlationId, vCenterId, inventoryItemId, gmState, vmErrorCode, vmState, gmErrorMessage, vmErrorMessage
+  $table = $table | Sort-Object -Property gmState, vmState, VCenterId, VMName, MoRefId
+
+  $table | Export-Csv -Path $Inv2LastRunFile -NoTypeInformation
+  $table | ConvertTo-Html | Out-File -FilePath ($Inv2LastRunFile -replace "\.csv$", ".html") -Encoding UTF8
 }
 
 if ($VMCredsFile) {
@@ -309,7 +341,8 @@ $deploymentTemplate = @{
 
 if ($EnableGuestManagement) {
   $filterQuery = "`n" + "| where  virtualHardwareManagement in ('Enabled', 'Disabled') and guestAgentEnabled == 'No' and powerState == 'poweredon' and isnotempty(toolsRunningStatus) and toolsRunningStatus != 'Not running'"
-} else {
+}
+else {
   # We do not include old resource type VMs and Link to vCenter VMs in the result.
   $filterQuery = "`n" + "| where  virtualHardwareManagement in ('Enabled', 'Disabled')"
 }
@@ -474,6 +507,10 @@ $location = $vcenterProps.location
 LogText "Extracted custom location: $customLocationId"
 LogText "Extracted location: $location"
 
+if ($Execute) {
+  LoadInv2LastRun
+}
+
 # if VMInventoryFile is not specified, we generate it
 if (!$VMInventoryFile) {
   if (!(az extension show --name resource-graph -o json)) {
@@ -482,13 +519,15 @@ if (!$VMInventoryFile) {
 
   if ($EnableGuestManagement) {
     LogText "Enabling and installing guest agent on the VMs which are powered on and have VMware Tools running."
-  } else {
+  }
+  else {
     LogText "Enabling the VMs which are not enabled in Azure."
   }
 
   $dumpFolder = $PSScriptRoot
   if ($UseDiscoveredInventory) {
     $dumpFolder = $deploymentFolderPath
+    CreateDeploymentFolder
   }
   $OutFileCSV = Join-Path -Path $dumpFolder -ChildPath "vms.csv"
   $OutFileJSON = Join-Path -Path $dumpFolder -ChildPath "vms.json"
@@ -496,12 +535,16 @@ if (!$VMInventoryFile) {
   # run arg query to get the VMs
   $skipToken = $null
 
-  $query = $ARGQuery
+  $query = $argQuery
   $query = $query.Replace("`r`n", " ").Replace("`n", " ")
 
-  LogText "Running resource graph query to generate the VM inventory file. This might take a while if you have a large number of VMs."
-  $ARGQuery | Out-File -FilePath $ARGQueryDumpFile -Encoding UTF8
-  LogText "The query has been saved to $ARGQueryDumpFile . You can run the query manually at $ARGPortalBlade"
+  $argQuery = @"
+// To get a list of the inventory data, you can run the query manually in the Azure Resource Graph Explorer:
+// $ARGPortalBlade
+"@ + $argQuery
+  $argQuery | Out-File -FilePath $ARGQueryDumpFile -Encoding UTF8
+  LogText "ARG query has been saved to $ARGQueryDumpFile . You can run the query manually at $ARGPortalBlade"
+  LogText "Running resource graph query to generate the VM inventory file. This might take a while if you have a large number of VMs..."
 
   $vms = @()
   while ($true) {
@@ -518,7 +561,6 @@ if (!$VMInventoryFile) {
         LogError $msg
         exit
       }
-      LogText "Total number of VMs found using ARG: $($page.total_records)"
     }
     $page.data | ForEach-Object {
       $vms += $_
@@ -568,6 +610,8 @@ if (!$attemptedVMs) {
   exit
 }
 
+LogText "Getting the VMs from the vCenter inventory in Azure using ARM API..."
+
 $vmInventoryList = az connectedvmware vcenter inventory-item list --subscription $vcInfo.SubscriptionId --resource-group $vcInfo.ResourceGroup --vcenter $vCenterName --query '[?kind == `VirtualMachine`].{moRefId:moRefId, moName:moName, managedResourceId:managedResourceId}' -o json | ConvertFrom-Json
 
 $moRefId2Inv = @{}
@@ -578,8 +622,7 @@ foreach ($vm in $vmInventoryList) {
   }
 }
 
-LogText "Found $($attemptedVMs.Length) VMs in the inventory file."
-LogText "Found $($vmInventoryList.Length) VMs in the vCenter inventory, will only enable those which are present in the inventory file."
+LogText "Found $($vmInventoryList.Length) VMs in azure, will attempt on $(attemptedVMs.Length) VMs."
 
 if ($EnableGuestManagement -and !$VMCredential) {
   $VMCredential = Get-Credential -Message "Enter the VM credentials for enabling guest management"
@@ -587,7 +630,7 @@ if ($EnableGuestManagement -and !$VMCredential) {
 }
 
 $uniqueIdx = 0
-
+$usedNames = @{}
 function normalizeMoName() {
   param(
     [Parameter(Mandatory = $true)]
@@ -608,7 +651,16 @@ function normalizeMoName() {
     $res = $res.Substring(0, $maxLen - $suffixLen - 3) + "$uniqueIdx"
     $Script:uniqueIdx += 1
   }
+  elseif ($usedNames.ContainsKey($res)) {
+    $res = $res + "$uniqueIdx"
+    $Script:uniqueIdx += 1
+  }
+  $usedNames[$res] = $true
   return $res
+}
+
+function getDeploymentId($deploymentName) {
+  return "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.Resources/deployments/$deploymentName"
 }
 
 $armTemplateLimit = 800
@@ -621,6 +673,7 @@ $summary = @()
 
 for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
 
+  $depId2Data = @{}
   # Check if $attemptedVMs[$i] has the required keys : moRefId and vmName, else skip
   $requiredKeys = @("moRefId", "vmName")
   $keysPresent = $true
@@ -636,6 +689,7 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
   }
 
   $moRefId = $attemptedVMs[$i].moRefId
+  $inventoryItemId = "$VCenterId/InventoryItems/$moRefId"
 
   if (!$moRefId2Inv.ContainsKey($moRefId)) {
     LogDebug "[$($i+1) / $($attemptedVMs.Length)] Warning: VM with moRefId $moRefId not found in the vCenter inventory in azure. Skipping."
@@ -649,6 +703,25 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
   }
 
   $inv = $moRefId2Inv[$moRefId]
+
+  if ($Inv2LastRun.ContainsKey($inventoryItemId)) {
+    $m = $Inv2LastRun[$inventoryItemId]
+    if ($m.vmState -eq "Failed" -or $m.gmState -eq "Failed") {
+      $errCode = $m.gmErrorCode
+      if (!$errCode) {
+        $errCode = $m.vmErrorCode
+      }
+      LogText "[$($i+1) / $($attemptedVMs.Length)] Skipping VM $($m.moName) (moRefID: $($m.moRefId)) since it had failed with '$($errCode)'. Please fix the issue, remove the entry from $Inv2LastRunFile and run the script to attempt on this VM again."
+      $summary += [PSCustomObject] @{
+        vmName              = "$($attemptedVMs[$i].vmName)"
+        moRefId             = $moRefId
+        arcEnableAttempted  = $false
+        guestAgentAttempted = $false
+      }
+      $SkippedCount += 1
+      continue
+    }
+  }
 
   $vmName = normalizeMoName $inv.moName
   $alreadyEnabled = $false
@@ -672,6 +745,15 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     | ConvertFrom-Json
     $resCountInDeployment += 2
     $resources += $vmResource
+    $vmdepId = getDeploymentId $vmResource.name
+    $depId2Data[$vmdepId] = @{
+      inventoryItemId = $inventoryItemId
+      vCenterId       = $VCenterId
+      vmName          = $vmName
+      moName          = $inv.moName
+      moRefId         = $moRefId
+      depType         = "vm"
+    }
   }
 
   if ($EnableGuestManagement) {
@@ -693,6 +775,15 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     }
     $resCountInDeployment += 2
     $resources += $gmResource
+    $gmdepId = getDeploymentId $gmResource.name
+    $depId2Data[$gmdepId] = @{
+      inventoryItemId = $inventoryItemId
+      vCenterId       = $VCenterId
+      vmName          = $vmName
+      moName          = $inv.moName
+      moRefId         = $moRefId
+      depType         = "gm"
+    }
   }
 
   $summary += [PSCustomObject] @{
@@ -732,7 +823,7 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     | Out-File -FilePath $deploymentFilePath -Encoding UTF8
 
     if ($Execute) {
-      $deploymentId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.Resources/deployments/$deploymentName"
+      $deploymentId = getDeploymentId $deploymentName
       try {
         $deploymentIdEsc = [uri]::EscapeDataString($deploymentId)
         $deploymentUrl = "https://portal.azure.com/#view/HubsExtension/DeploymentDetailsBlade/~/overview/id/$deploymentIdEsc"
@@ -746,6 +837,60 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
       LogText "(Batch $batch) You can track the deployment through azure portal using the following link: $deploymentUrl"
 
       az deployment group create --subscription $SubscriptionId --resource-group $ResourceGroup --name $deploymentName --template-file $deploymentFilePath @deployArgs --debug *>> $azDebugLog
+
+      $correlationId = az deployment group show --subscription $SubscriptionId --resource-group $ResourceGroup --name $deploymentName --query 'properties.correlationId' -o tsv
+      if (!$correlationId) {
+        LogError "Deployment $deploymentName could not be submitted. Please check the log file for more details."
+      }
+
+      $dList = @()
+      if ($correlationId) {
+        $jmesFilter = "[?properties.correlationId=='$correlationId']"
+        $deployments = az deployment group list --subscription $SubscriptionId --resource-group $ResourceGroup --query $jmesFilter -o json
+        if (!$deployments) {
+          LogError "Failed to get the deployment details for correlationId: $correlationId"
+        }
+        else {
+          $dList = $deployments | ConvertFrom-Json
+        }
+      }
+      for ($j = 0; $j -lt $dList.Length; $j++) {
+        $dep = $dList[$j]
+        $name = $dep.name
+        if ($dep.id -eq $deploymentId) {
+          continue
+        }
+        $errorCode = @()
+        $errorMessage = @()
+        if ($dep.properties.error) {
+          $dep.properties.error.details | ForEach-Object {
+            $errorCode += $_.code
+            $errorMessage += $_.message
+          }
+        }
+        $typ = $depId2Data[$dep.id].depType
+        $depId2Data[$dep.id] += @{
+          deploymentUrl         = $deploymentUrl
+          correlationId         = $correlationId
+          "$($typ)State"        = $dep.properties.provisioningState
+          "$($typ)ErrorCode"    = $errorCode -join ", "
+          "$($typ)ErrorMessage" = $errorMessage -join ", "
+        }
+      }
+      foreach ($key in $depId2Data.Keys) {
+        $data = $depId2Data[$key]
+        $invId = $data.inventoryItemId
+        if (!$Inv2LastRun.ContainsKey($invId)) {
+          $Inv2LastRun[$invId] = @{}
+        }
+        foreach ($k in $data.Keys) {
+          if ($k -eq "depType") {
+            continue
+          }
+          $Inv2LastRun[$invId][$k] = $data[$k]
+        }
+      }
+      SaveInv2LastRun
     }
     $resources = @()
 
@@ -764,4 +909,10 @@ if (!$Execute) {
   LogText "Please review the ARM templates and summary file before running the script with the -Execute switch."
   LogText "The summary file is saved at: $deploymentSummaryFilePath"
   LogText "The deployment URLs are saved at: $deploymentUrlsFilePath"
+}
+
+if ($Inv2LastRun.Count -gt 0) {
+  LogText "Saved the history of guest management attempts to $Inv2LastRunFile"
+  LogText "You can also open the html file $($Inv2LastRunFile -replace "\.csv$", ".html") in a web browser."
+  LogText "Any failed VMs will not be attempted again unless the entry is deleted from the file $Inv2LastRunFile"
 }
