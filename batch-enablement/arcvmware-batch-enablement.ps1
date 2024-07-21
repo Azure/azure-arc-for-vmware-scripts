@@ -341,6 +341,7 @@ $deploymentTemplate = @{
 
 if ($EnableGuestManagement) {
   $filterQuery = "`n" + "| where  virtualHardwareManagement in ('Enabled', 'Disabled') and guestAgentEnabled == 'No' and powerState == 'poweredon' and isnotempty(toolsRunningStatus) and toolsRunningStatus != 'Not running'"
+  $filterQuery += "`n" + "| where osName !startswith 'VMware ' and osName !contains 'CBL-Mariner' and osName !startswith 'Apple ' and osName !has 'FreeBSD' and osName !has 'NetBSD' and osName !has 'OpenBSD'"
 }
 else {
   # We do not include old resource type VMs and Link to vCenter VMs in the result.
@@ -358,6 +359,7 @@ connectedVMwarevSphereResources
 | extend moRefId = tostring(properties.moRefId)
 | extend moName = tostring(properties.moName), powerState = tolower(tostring(properties.powerState))
 | extend osName = tostring(properties.osName)
+| extend osType = tostring(properties.osType)
 | extend toolsRunningStatus = tostring(properties.toolsRunningStatus), toolsVersionStatus = tostring(properties.toolsVersionStatus)
 | extend toolsVersion = tostring(properties.toolsVersion), host = tostring(properties.host.moName), cluster=tostring(properties.cluster.moName)
 | extend resourcePool = tostring(properties.resourcePool.moName), ipAddresses = properties.ipAddresses
@@ -408,7 +410,7 @@ connectedVMwarevSphereResources
 | extend vmName = moName
 | extend toolsVersion = toint(toolsVersion)${filterQuery}
 | extend ipAddresses=tostring(ipAddresses)
-| project id, moName, moRefId, inventoryType, azureEnabled, virtualHardwareManagement, guestAgentEnabled, powerState, toolsSummary, toolsRunningStatus, toolsVersionStatus, toolsVersion, osName, ipAddresses, host, cluster, resourcePool, managedResourceId, resourceGroup, vmName
+| project id, moName, moRefId, inventoryType, azureEnabled, virtualHardwareManagement, guestAgentEnabled, powerState, toolsSummary, toolsRunningStatus, toolsVersionStatus, toolsVersion, osName, osType, ipAddresses, host, cluster, resourcePool, managedResourceId, resourceGroup, vmName
 "@
 
 #EndRegion: ARG Query
