@@ -7,3 +7,5 @@
 **/*vms.json
 **/creds/
 **/arg-query.kql
+**/last-run.csv
+**/last-run.html
