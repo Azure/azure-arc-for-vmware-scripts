@@ -341,7 +341,7 @@ $deploymentTemplate = @{
 
 if ($EnableGuestManagement) {
   $filterQuery = "`n" + "| where  virtualHardwareManagement in ('Enabled', 'Disabled') and guestAgentEnabled == 'No' and powerState == 'poweredon' and isnotempty(toolsRunningStatus) and toolsRunningStatus != 'Not running'"
-  $filterQuery += "`n" + "| where osName !startswith 'VMware ' and osName !contains 'CBL-Mariner' and osName !startswith 'Apple ' and osName !has 'FreeBSD' and osName !has 'NetBSD' and osName !has 'OpenBSD'"
+  $filterQuery += "`n" + "| where osName !startswith 'VMware ' and osName !startswith 'Apple ' and osName !has 'CBL-Mariner' and osName !has 'FreeBSD' and osName !has 'NetBSD' and osName !has 'OpenBSD'"
 }
 else {
   # We do not include old resource type VMs and Link to vCenter VMs in the result.
