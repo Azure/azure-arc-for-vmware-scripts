@@ -543,6 +543,7 @@ if (!$VMInventoryFile) {
   $argQuery = @"
 // To get a list of the inventory data, you can run the query manually in the Azure Resource Graph Explorer:
 // $ARGPortalBlade
+
 "@ + $argQuery
   $argQuery | Out-File -FilePath $ARGQueryDumpFile -Encoding UTF8
   LogText "ARG query has been saved to $ARGQueryDumpFile . You can run the query manually at $ARGPortalBlade"
