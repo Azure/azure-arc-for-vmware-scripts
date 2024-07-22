@@ -165,7 +165,10 @@ function LoadInv2LastRun {
   }
   $table = Import-Csv -Path $Inv2LastRunFile
   for ($i = 0; $i -lt $table.Length; $i++) {
-    $row = $table[$i]
+    $row = @{}
+    $table[$i] | Get-Member -MemberType NoteProperty | ForEach-Object {
+      $row[$_.Name] = $table[$i].($_.Name)
+    }
     $Script:Inv2LastRun[$row.inventoryItemId] = $row
   }
   LogDebug "Loaded $($table.Length) entries from Inv2LastRunFile."
