@@ -4,7 +4,6 @@ This is a helper script for enabling VMs in a vCenter in batch. The script will 
   arcvmware-batch-enablement.log - log file
   deployments-<timestamp>/all-deployments-<timestamp>.txt - list of Azure portal links to all deployments created
   deployments-<timestamp>/vmw-dep-<timestamp>-<batch>.json - ARM deployment files
-  deployments-<timestamp>/all-summary.csv - summary of the VMs enabled
   last-run.csv - history of attempts to enable in azure and install guest management on VMs
 
 Before running this script, please install az cli and the extensions: connectedvmware and resource-graph.
@@ -119,7 +118,6 @@ $StartTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH-mm-ss")
 $logFile = Join-Path $PSScriptRoot -ChildPath "arcvmware-batch-enablement.log"
 $deploymentFolderPath = Join-Path $PSScriptRoot -ChildPath "deployments-$StartTime"
 $deploymentUrlsFilePath = Join-Path $deploymentFolderPath -ChildPath "all-deployments.txt"
-$deploymentSummaryFilePath = Join-Path $deploymentFolderPath -ChildPath "all-summary.csv"
 $azDebugLog = Join-Path $deploymentFolderPath -ChildPath "az-debug.log"
 $defaultVMCredsPath = Join-Path $deploymentFolderPath -ChildPath ".do-not-reveal-vm-credentials.xml"
 $ARGQueryDumpFile = Join-Path $deploymentFolderPath -ChildPath "arg-query.kql"
@@ -341,7 +339,7 @@ $deploymentTemplate = @{
 
 if ($EnableGuestManagement) {
   $filterQuery = "`n" + "| where  virtualHardwareManagement in ('Enabled', 'Disabled') and guestAgentEnabled == 'No' and powerState == 'poweredon' and isnotempty(toolsRunningStatus) and toolsRunningStatus != 'Not running'"
-  $filterQuery += "`n" + "| where osName !startswith 'VMware ' and osName !startswith 'Apple ' and osName !has 'CBL-Mariner' and osName !has 'FreeBSD' and osName !has 'NetBSD' and osName !has 'OpenBSD'"
+  $filterQuery += "`n" + "| where osName !startswith 'VMware ' and osName !startswith 'Apple ' and osName !contains 'CBL-Mariner' and osName !contains 'FreeBSD' and osName !contains 'NetBSD' and osName !contains 'OpenBSD' and not(moName matches regex '[0-9a-f]{45}-control-plan.{3,5}')"
 }
 else {
   # We do not include old resource type VMs and Link to vCenter VMs in the result.
@@ -509,9 +507,7 @@ $location = $vcenterProps.location
 LogText "Extracted custom location: $customLocationId"
 LogText "Extracted location: $location"
 
-if ($Execute) {
-  LoadInv2LastRun
-}
+LoadInv2LastRun
 
 # if VMInventoryFile is not specified, we generate it
 if (!$VMInventoryFile) {
@@ -625,7 +621,7 @@ foreach ($vm in $vmInventoryList) {
   }
 }
 
-LogText "Found $($vmInventoryList.Length) VMs in azure, will attempt on $(attemptedVMs.Length) VMs."
+LogText "Found $($vmInventoryList.Length) VMs in azure, will attempt on $($attemptedVMs.Length) VMs."
 
 if ($EnableGuestManagement -and !$VMCredential) {
   $VMCredential = Get-Credential -Message "Enter the VM credentials for enabling guest management"
@@ -650,13 +646,15 @@ function normalizeMoName() {
   }
   $res = $name -replace "[^A-Za-z0-9-]", "-"
   $suffixLen = "-vm".Length # or "-gm".Length
-  if ($res.Length + $suffixLen -gt $maxLen) {
-    $res = $res.Substring(0, $maxLen - $suffixLen - 3) + "$uniqueIdx"
-    $Script:uniqueIdx += 1
-  }
-  elseif ($usedNames.ContainsKey($res)) {
-    $res = $res + "$uniqueIdx"
-    $Script:uniqueIdx += 1
+  if (($res.Length + $suffixLen -gt $maxLen) -or $usedNames.ContainsKey($res)) {
+    while ($true) {
+      $endIdx = ($maxLen - $suffixLen - 3), ($res.Length - 1) | Measure-Object -Minimum | Select-Object -ExpandProperty Minimum
+      $res = $res.Substring(0, $endIdx) + "$uniqueIdx"
+      $Script:uniqueIdx += 1
+      if (!$usedNames.ContainsKey($res)) {
+        break
+      }
+    }
   }
   $usedNames[$res] = $true
   return $res
@@ -671,12 +669,115 @@ $armTemplateLimit = 800
 $resources = @()
 $resCountInDeployment = 0
 $batch = 0
+$depId2Data = @{}
+function DeployBatch() {
+  if ($resources.Length -eq 0) {
+    return
+  }
+  $deployment = $deploymentTemplate | ConvertTo-Json -Depth 30 | ConvertFrom-Json
+  $deployment.resources = $resources
 
-$summary = @()
+  CreateDeploymentFolder
+
+  $deployArgs = @()
+  if ($EnableGuestManagement) {
+    $paramsPath = Join-Path $deploymentFolderPath -ChildPath ".do-not-reveal-guestvm-credential.json"
+    $parametersTemplate.parameters.guestManagementUsername.value = $VMCredential.UserName
+    $parametersTemplate.parameters.guestManagementPassword.value = $VMCredential.GetNetworkCredential().Password
+    $parametersTemplate | ConvertTo-Json -Depth 10 | Out-File -FilePath $paramsPath -Encoding UTF8
+    $deployArgs += @(
+      "--parameters",
+      "@$paramsPath"
+    )
+  }
+  else {
+    $deployment.parameters = @{}
+  }
+
+  $Script:batch += 1
+  $deploymentName = "vmw-dep-$StartTime-$batch"
+  $deploymentFilePath = Join-Path $deploymentFolderPath -ChildPath "$deploymentName.json"
+
+  $deployment `
+  | ConvertTo-Json -Depth 30 `
+  | Out-File -FilePath $deploymentFilePath -Encoding UTF8
+
+  if ($Execute) {
+    $deploymentId = getDeploymentId $deploymentName
+    try {
+      $deploymentIdEsc = [uri]::EscapeDataString($deploymentId)
+      $deploymentUrl = "https://portal.azure.com/#view/HubsExtension/DeploymentDetailsBlade/~/overview/id/$deploymentIdEsc"
+    }
+    catch {
+      $deploymentUrl = "https://portal.azure.com/#resource$($deploymentId)/overview"
+    }
+    Add-Content -Path $deploymentUrlsFilePath -Value $deploymentUrl
+
+    LogText "(Batch $batch) Deploying $deploymentFilePath containing $($resources.Length) deployments and $resCountInDeployment resources."
+    LogText "(Batch $batch) You can track the deployment through azure portal using the following link: $deploymentUrl"
+
+    az deployment group create --subscription $SubscriptionId --resource-group $ResourceGroup --name $deploymentName --template-file $deploymentFilePath @deployArgs --debug *>> $azDebugLog
+
+    $correlationId = az deployment group show --subscription $SubscriptionId --resource-group $ResourceGroup --name $deploymentName --query 'properties.correlationId' -o tsv
+    if (!$correlationId) {
+      LogError "Deployment $deploymentName could not be submitted. Please check the log file for more details."
+    }
+
+    $dList = @()
+    if ($correlationId) {
+      $jmesFilter = "[?properties.correlationId=='$correlationId']"
+      $deployments = az deployment group list --subscription $SubscriptionId --resource-group $ResourceGroup --query $jmesFilter -o json
+      if (!$deployments) {
+        LogError "Failed to get the deployment details for correlationId: $correlationId"
+      }
+      else {
+        $dList = $deployments | ConvertFrom-Json
+      }
+    }
+    for ($j = 0; $j -lt $dList.Length; $j++) {
+      $dep = $dList[$j]
+      if ($dep.id -eq $deploymentId) {
+        continue
+      }
+      $errorCode = @()
+      $errorMessage = @()
+      if ($dep.properties.error) {
+        $dep.properties.error.details | ForEach-Object {
+          $errorCode += $_.code
+          $errorMessage += $_.message
+        }
+      }
+      $typ = $depId2Data[$dep.id].depType
+      $depId2Data[$dep.id] += @{
+        deploymentUrl         = $deploymentUrl
+        correlationId         = $correlationId
+        "$($typ)State"        = $dep.properties.provisioningState
+        "$($typ)ErrorCode"    = $errorCode -join ", "
+        "$($typ)ErrorMessage" = $errorMessage -join ", "
+      }
+    }
+    foreach ($key in $depId2Data.Keys) {
+      $data = $depId2Data[$key]
+      $invId = $data.inventoryItemId
+      if (!$Inv2LastRun.ContainsKey($invId)) {
+        $Inv2LastRun[$invId] = @{}
+      }
+      foreach ($k in $data.Keys) {
+        if ($k -eq "depType") {
+          continue
+        }
+        $Inv2LastRun[$invId][$k] = $data[$k]
+      }
+    }
+    SaveInv2LastRun
+  }
+  $Script:resources = @()
+  $Script:resCountInDeployment = 0
+  $Script:depId2Data = @{}
+}
 
 for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
 
-  $depId2Data = @{}
   # Check if $attemptedVMs[$i] has the required keys : moRefId and vmName, else skip
   $requiredKeys = @("moRefId", "vmName")
   $keysPresent = $true
@@ -696,12 +797,6 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
 
   if (!$moRefId2Inv.ContainsKey($moRefId)) {
     LogDebug "[$($i+1) / $($attemptedVMs.Length)] Warning: VM with moRefId $moRefId not found in the vCenter inventory in azure. Skipping."
-    $summary += [PSCustomObject] @{
-      vmName              = "$($attemptedVMs[$i].vmName)"
-      moRefId             = $moRefId
-      arcEnableAttempted  = $false
-      guestAgentAttempted = $false
-    }
     continue
   }
 
@@ -715,12 +810,6 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
         $errCode = $m.vmErrorCode
       }
       LogText "[$($i+1) / $($attemptedVMs.Length)] Skipping VM $($m.moName) (moRefID: $($m.moRefId)) since it had failed with '$($errCode)'. Please fix the issue, remove the entry from $Inv2LastRunFile and run the script to attempt on this VM again."
-      $summary += [PSCustomObject] @{
-        vmName              = "$($attemptedVMs[$i].vmName)"
-        moRefId             = $moRefId
-        arcEnableAttempted  = $false
-        guestAgentAttempted = $false
-      }
       $SkippedCount += 1
       continue
     }
@@ -789,133 +878,25 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
     }
   }
 
-  $summary += [PSCustomObject] @{
-    vmName              = $vmName
-    moRefId             = $moRefId
-    arcEnableAttempted  = !$alreadyEnabled
-    guestAgentAttempted = $true
-  }
-
   if (($resCountInDeployment + 4) -ge $armTemplateLimit -or ($i + 1) -eq $attemptedVMs.Length) {
-    $deployment = $deploymentTemplate | ConvertTo-Json -Depth 30 | ConvertFrom-Json
-    $deployment.resources = $resources
-
-    CreateDeploymentFolder
-
-    $deployArgs = @()
-    if ($EnableGuestManagement) {
-      $paramsPath = Join-Path $deploymentFolderPath -ChildPath ".do-not-reveal-guestvm-credential.json"
-      $parametersTemplate.parameters.guestManagementUsername.value = $VMCredential.UserName
-      $parametersTemplate.parameters.guestManagementPassword.value = $VMCredential.GetNetworkCredential().Password
-      $parametersTemplate | ConvertTo-Json -Depth 10 | Out-File -FilePath $paramsPath -Encoding UTF8
-      $deployArgs += @(
-        "--parameters",
-        "@$paramsPath"
-      )
-    }
-    else {
-      $deployment.parameters = @{}
-    }
-
-    $batch += 1
-    $deploymentName = "vmw-dep-$StartTime-$batch"
-    $deploymentFilePath = Join-Path $deploymentFolderPath -ChildPath "$deploymentName.json"
-
-    $deployment `
-    | ConvertTo-Json -Depth 30 `
-    | Out-File -FilePath $deploymentFilePath -Encoding UTF8
-
-    if ($Execute) {
-      $deploymentId = getDeploymentId $deploymentName
-      try {
-        $deploymentIdEsc = [uri]::EscapeDataString($deploymentId)
-        $deploymentUrl = "https://portal.azure.com/#view/HubsExtension/DeploymentDetailsBlade/~/overview/id/$deploymentIdEsc"
-      }
-      catch {
-        $deploymentUrl = "https://portal.azure.com/#resource$($deploymentId)/overview"
-      }
-      Add-Content -Path $deploymentUrlsFilePath -Value $deploymentUrl
-
-      LogText "(Batch $batch) Deploying $deploymentFilePath"
-      LogText "(Batch $batch) You can track the deployment through azure portal using the following link: $deploymentUrl"
-
-      az deployment group create --subscription $SubscriptionId --resource-group $ResourceGroup --name $deploymentName --template-file $deploymentFilePath @deployArgs --debug *>> $azDebugLog
-
-      $correlationId = az deployment group show --subscription $SubscriptionId --resource-group $ResourceGroup --name $deploymentName --query 'properties.correlationId' -o tsv
-      if (!$correlationId) {
-        LogError "Deployment $deploymentName could not be submitted. Please check the log file for more details."
-      }
-
-      $dList = @()
-      if ($correlationId) {
-        $jmesFilter = "[?properties.correlationId=='$correlationId']"
-        $deployments = az deployment group list --subscription $SubscriptionId --resource-group $ResourceGroup --query $jmesFilter -o json
-        if (!$deployments) {
-          LogError "Failed to get the deployment details for correlationId: $correlationId"
-        }
-        else {
-          $dList = $deployments | ConvertFrom-Json
-        }
-      }
-      for ($j = 0; $j -lt $dList.Length; $j++) {
-        $dep = $dList[$j]
-        $name = $dep.name
-        if ($dep.id -eq $deploymentId) {
-          continue
-        }
-        $errorCode = @()
-        $errorMessage = @()
-        if ($dep.properties.error) {
-          $dep.properties.error.details | ForEach-Object {
-            $errorCode += $_.code
-            $errorMessage += $_.message
-          }
-        }
-        $typ = $depId2Data[$dep.id].depType
-        $depId2Data[$dep.id] += @{
-          deploymentUrl         = $deploymentUrl
-          correlationId         = $correlationId
-          "$($typ)State"        = $dep.properties.provisioningState
-          "$($typ)ErrorCode"    = $errorCode -join ", "
-          "$($typ)ErrorMessage" = $errorMessage -join ", "
-        }
-      }
-      foreach ($key in $depId2Data.Keys) {
-        $data = $depId2Data[$key]
-        $invId = $data.inventoryItemId
-        if (!$Inv2LastRun.ContainsKey($invId)) {
-          $Inv2LastRun[$invId] = @{}
-        }
-        foreach ($k in $data.Keys) {
-          if ($k -eq "depType") {
-            continue
-          }
-          $Inv2LastRun[$invId][$k] = $data[$k]
-        }
-      }
-      SaveInv2LastRun
-    }
-    $resources = @()
-
-    $summary | Export-Csv -Path $deploymentSummaryFilePath -NoTypeInformation -Append
-    $summary = @()
-    $resCountInDeployment = 0
-
+    DeployBatch
     # NOTE: set sleep time between deployments here, if needed.
     LogText "Sleeping for 5 seconds before running next batch"
     Start-Sleep -Seconds 5
   }
 }
 
+DeployBatch
+
 if (!$Execute) {
   LogText "The ARM templates have been created in the folder: $deploymentFolderPath"
-  LogText "Please review the ARM templates and summary file before running the script with the -Execute switch."
-  LogText "The summary file is saved at: $deploymentSummaryFilePath"
+  LogText "Please review the ARM templates before running the script with the -Execute switch."
   LogText "The deployment URLs are saved at: $deploymentUrlsFilePath"
 }
 
 if ($Inv2LastRun.Count -gt 0) {
   LogText "Saved the history of guest management attempts to $Inv2LastRunFile"
   LogText "You can also open the html file $($Inv2LastRunFile -replace "\.csv$", ".html") in a web browser."
+  LogText "Skipped $SkippedCount VMs which had failed in the previous attempts."
   LogText "Any failed VMs will not be attempted again unless the entry is deleted from the file $Inv2LastRunFile"
 }
