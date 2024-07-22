@@ -1,3 +1,4 @@
+.vscode/
 **/vmw-dep-*.json
 **/vmw-dep-*.csv
 **/deployments-*
@@ -9,3 +10,4 @@
 **/arg-query.kql
 **/last-run.csv
 **/last-run.html
+**/*creds.xml
