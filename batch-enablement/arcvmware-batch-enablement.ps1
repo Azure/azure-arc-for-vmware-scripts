@@ -232,7 +232,7 @@ $VMtpl = @{
           type       = "Microsoft.HybridCompute/machines"
           apiVersion = "2023-03-15-preview"
           name       = "{{vmName}}"
-          kind       = "VMware"
+          kind       = "{{kind}}"
           location   = "{{location}}"
           properties = @{}
         }
@@ -277,7 +277,7 @@ $GMtpl = @{
           type       = "Microsoft.HybridCompute/machines"
           apiVersion = "2023-03-15-preview"
           name       = "{{vmName}}"
-          kind       = "VMware"
+          kind       = "{{kind}}"
           location   = "{{location}}"
           properties = @{
           }
@@ -494,12 +494,17 @@ if ($vcInfo.Type -ne "VCenters") {
   exit
 }
 
-$vcPropsJson = az connectedvmware vcenter show --subscription $vcInfo.SubscriptionId --resource-group $vcInfo.ResourceGroup --name $vCenterName --query '{clId: extendedLocation.name, location:location}' -o json
+$vcPropsJson = az connectedvmware vcenter show --subscription $vcInfo.SubscriptionId --resource-group $vcInfo.ResourceGroup --name $vCenterName --query '{kind: kind, clId: extendedLocation.name, location:location}' -o json
 if (!$vcPropsJson) {
   LogError "Failed to get vCenter properties for $vCenterName . Please make sure you have logged in to azure using 'az login'."
   exit
 }
 $vcenterProps = $vcPropsJson | ConvertFrom-Json
+$kind = $vcenterProps.kind
+if (!$kind) {
+  LogError "Failed to extract kind from vCenter, defaulting to VMWare : $vcPropsJson"
+  $kind = "VMware"
+}
 $customLocationId = $vcenterProps.clId
 if (!$customLocationId) {
   LogError "Failed to extract custom location id from vCenter $vCenterName"
@@ -832,6 +837,7 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
   if (!$alreadyEnabled) {
     $vmResource = $VMtpl | ConvertTo-Json -Depth 30
     $vmResource = $vmResource `
+      -replace "{{kind}}", $kind `
       -replace "{{location}}", $location `
       -replace "{{vmName}}", $vmName `
       -replace "{{moRefId}}", $moRefId `
@@ -854,6 +860,7 @@ for ($i = 0; $i -lt $attemptedVMs.Length; $i++) {
   if ($EnableGuestManagement) {
     $gmResource = $GMtpl | ConvertTo-Json -Depth 30
     $gmResource = $gmResource `
+      -replace "{{kind}}", $kind `
       -replace "{{location}}", $location `
       -replace "{{vmName}}", $vmName `
     | ConvertFrom-Json
