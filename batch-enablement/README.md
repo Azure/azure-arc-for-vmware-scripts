@@ -1,5 +1,12 @@
 # Arc for VMWare Batch enablement
 
+> [!WARNING]
+> **This repository is deprecated and is no longer maintained by the Azure Arc for VMware team.**
+> The scripts here are kept for historical reference only, are provided as-is without support, and
+> will not receive further fixes. Use the officially supported
+> [Azure Arc-enabled VMware vSphere](https://learn.microsoft.com/azure/azure-arc/vmware-vsphere/)
+> tooling instead.
+
 This PowerShell script, [`arcvmware-batch-enablement.ps1`](./arcvmware-batch-enablement.ps1), is designed to enable Virtual Machines (VMs) in a vCenter in batch. It's particularly useful for large-scale operations where you need to manage hundreds or thousands of VMs.
 The script can be run on PowerShell (Windows) or PowerShell Core (Windows, Linux, macOS).
 
@@ -118,12 +125,14 @@ To generate the inventory of VMs, you can run the script without any `-VMInvento
 
 <br/>
 
-> [!NOTE]
-> If you want to extract and filter using some VM properties which are visible in the vCenter, but not available in Azure, you can use `PowerCLI` or `govc` to fetch the data directly using VMWare VSphere APIs. Run the script [`powercli-export-vms.ps1`](./powercli-export-vms.ps1) to export the VM data from vCenter.
-
-```powershell
-.\powercli-export-vms.ps1 -vCenterAddress vcenter.contoso.com
-```
+> [!IMPORTANT]
+> The helper script `powercli-export-vms.ps1` has been **removed** from this repository. See the
+> [repository README](../README.md) for details.
+>
+> If you want to extract and filter VM properties which are visible in the vCenter, but not
+> available in Azure, query the VMware vSphere APIs directly with your own
+> [PowerCLI](https://developer.broadcom.com/powercli) or
+> [`govc`](https://github.com/vmware/govmomi) workflow.
 
 <details>
     <summary>Click to view a sample VM inventory entry generated using PowerCLI or govc</summary>
