@@ -1,26 +1,14 @@
 # Project
 
-> [!WARNING]
-> **This repository is deprecated and is no longer maintained.**
->
-> The Azure Arc for VMware team has stopped maintaining the scripts in this repository. No further
-> fixes or feature work will be delivered here. The content is kept for historical reference only
-> and is provided as-is, without support. Please do not take a new dependency on these scripts, and
-> use the officially supported
-> [Azure Arc-enabled VMware vSphere](https://learn.microsoft.com/azure/azure-arc/vmware-vsphere/)
-> tooling and documentation instead.
+> This repo has been populated by an initial template to help get you started. Please
+> make sure to update the content to build a great experience for community-building.
 
-## Removed scripts
+As the maintainer of this project, please make a few updates:
 
-The helper script `batch-enablement/powercli-export-vms.ps1` has been **removed** from this
-repository. It was an optional convenience helper for exporting vCenter inventory and no longer
-met our current engineering standards. As the repository is deprecated, the script was removed
-rather than updated.
-
-If you need the same inventory data, query vCenter directly with a supported
-[VMware PowerCLI](https://developer.broadcom.com/powercli) or
-[`govc`](https://github.com/vmware/govmomi) workflow, or use the Azure Resource Graph based
-inventory that the batch enablement script produces on its own.
+- Improving this README.MD file to provide a great experience
+- Updating SUPPORT.MD with content about this project's support experience
+- Understanding the security reporting process in SECURITY.MD
+- Remove this section from the README
 
 ## Contributing
 
