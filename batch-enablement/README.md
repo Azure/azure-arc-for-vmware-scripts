@@ -125,6 +125,13 @@ To generate the inventory of VMs, you can run the script without any `-VMInvento
 .\powercli-export-vms.ps1 -vCenterAddress vcenter.contoso.com
 ```
 
+> [!IMPORTANT]
+> The script validates the vCenter TLS certificate before sending your credentials. If your vCenter presents a self-signed or otherwise untrusted certificate, the connection fails by design. The recommended fix is to trust the vCenter certificate authority on the machine running the script. If you need to bypass validation against an isolated lab endpoint, pass `-SkipCertificateCheck`. The bypass is scoped to the current session, is reverted before the script exits, and never changes the machine-wide PowerCLI trust policy.
+>
+> ```powershell
+> .\powercli-export-vms.ps1 -vCenterAddress vcenter.contoso.com -SkipCertificateCheck
+> ```
+
 <details>
     <summary>Click to view a sample VM inventory entry generated using PowerCLI or govc</summary>
 
