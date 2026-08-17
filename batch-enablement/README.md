@@ -121,9 +121,41 @@ To generate the inventory of VMs, you can run the script without any `-VMInvento
 > [!NOTE]
 > If you want to extract and filter using some VM properties which are visible in the vCenter, but not available in Azure, you can use `PowerCLI` or `govc` to fetch the data directly using VMWare VSphere APIs. Run the script [`powercli-export-vms.ps1`](./powercli-export-vms.ps1) to export the VM data from vCenter.
 
+#### Prerequisites
+
+The script needs either [VMware PowerCLI](https://developer.broadcom.com/powercli) or [`govc`](https://github.com/vmware/govmomi/releases) to be installed. It uses PowerCLI whenever the `Connect-VIServer` cmdlet is available, and otherwise falls back to `govc` — there is no switch to choose between them.
+
+PowerCLI is the recommended option: it receives your credentials as a `PSCredential` object, whereas `govc` only reads credentials from environment variables, so the password has to be expanded into a plaintext value on that code path.
+
+```powershell
+# Installs for the current user only, so it does not require administrator rights
+Install-Module -Name VMware.PowerCLI -Scope CurrentUser -Force -AllowClobber -Confirm:$false
+```
+
+If the script is blocked from running because it is unsigned, allow it for the current session:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+#### Running the script
+
+The script prompts for anything you do not pass on the command line, so the minimal invocation is:
+
 ```powershell
 .\powercli-export-vms.ps1 -vCenterAddress vcenter.contoso.com
 ```
+
+To supply the credentials up front instead of being prompted:
+
+```powershell
+$cred = Get-Credential -Message "vCenter credentials"
+.\powercli-export-vms.ps1 -vCenterAddress vcenter.contoso.com -vCenterCredential $cred
+```
+
+Pass `-vCenterAddress` as a hostname or IP address only — do not include `https://` or a trailing slash. The inventory is written next to the script as `vms.csv` and `vms.json`, either of which can then be passed to `arcvmware-batch-enablement.ps1` using `-VMInventoryFile`.
+
+#### vCenter certificate validation
 
 > [!IMPORTANT]
 > The script validates the vCenter TLS certificate before sending your credentials. If your vCenter presents a self-signed or otherwise untrusted certificate, the connection fails by design. The recommended fix is to trust the vCenter certificate authority on the machine running the script. If you need to bypass validation against an isolated lab endpoint, pass `-SkipCertificateCheck`. The bypass is scoped to the current session, is reverted before the script exits, and never changes the machine-wide PowerCLI trust policy.
@@ -131,6 +163,40 @@ To generate the inventory of VMs, you can run the script without any `-VMInvento
 > ```powershell
 > .\powercli-export-vms.ps1 -vCenterAddress vcenter.contoso.com -SkipCertificateCheck
 > ```
+
+A connection to a vCenter that uses the default VMware certificate authority fails with an error similar to `certificate signed by unknown authority` or `PartialChain`. Being able to sign in to the vSphere Client in a browser does not mean the certificate is trusted — the browser only shows a warning that you can click through.
+
+To trust the vCenter certificate authority so that the script runs without `-SkipCertificateCheck`, download the certificate bundle that vCenter publishes and import the root certificate:
+
+```powershell
+# The bundle is served over the same connection that is not yet trusted, so validation has to be
+# bypassed for this download. No credentials are sent by this request, and the downloaded
+# certificate is verified against the live vCenter certificate before it is trusted.
+Invoke-WebRequest -Uri "https://vcenter.contoso.com/certs/download.zip" -OutFile certs.zip -SkipCertificateCheck
+Expand-Archive certs.zip -DestinationPath certs -Force
+
+# Verify that the downloaded certificate authority really did issue the certificate that the live
+# vCenter presents. Only continue if this prints True.
+$caPath = (Get-ChildItem certs\certs\win\*.crt | Select-Object -First 1).FullName
+$ca = [Security.Cryptography.X509Certificates.X509Certificate2]::new($caPath)
+$tcp = [Net.Sockets.TcpClient]::new(); $tcp.Connect("vcenter.contoso.com", 443)
+$ssl = [Net.Security.SslStream]::new($tcp.GetStream(), $false, { $true })
+$ssl.AuthenticateAsClient("vcenter.contoso.com")
+$leaf = [Security.Cryptography.X509Certificates.X509Certificate2]$ssl.RemoteCertificate
+$ssl.Dispose(); $tcp.Close()
+$chain = [Security.Cryptography.X509Certificates.X509Chain]::new()
+$chain.ChainPolicy.TrustMode = [Security.Cryptography.X509Certificates.X509ChainTrustMode]::CustomRootTrust
+[void]$chain.ChainPolicy.CustomTrustStore.Add($ca)
+$chain.ChainPolicy.RevocationMode = 'NoCheck'
+$chain.Build($leaf)
+"Thumbprint to confirm in the import prompt: $($ca.Thumbprint)"
+
+# Import the root certificate. Windows asks you to confirm the change to the trust store; check
+# that the thumbprint shown in the prompt matches the one printed above.
+Import-Certificate -FilePath $caPath -CertStoreLocation Cert:\CurrentUser\Root
+```
+
+`govc` uses the Windows certificate store on Windows, so importing the certificate into `Cert:\CurrentUser\Root` applies to both the PowerCLI and the `govc` code path.
 
 <details>
     <summary>Click to view a sample VM inventory entry generated using PowerCLI or govc</summary>
