@@ -191,25 +191,48 @@ $machineExists = Test-AzResourceExists -AzArgs @("connectedmachine", "show", "--
 # Report which branch of the TSG we are on.
 Write-Host "HCRP machine exists: $machineExists"
 
+# The 'kind' on an existing machine decides whether a VM instance can be created under it.
+$machineKind = $null
+if ($machineExists) {
+    $machineKind = az connectedmachine show --ids $machineId --query "kind" -o tsv
+
+    # Without the kind we cannot tell whether the recreate in step 2.2 would be rejected.
+    if ($LASTEXITCODE -ne 0) { throw "Failed to read the 'kind' property of HCRP machine '$machineName'." }
+
+    # Show it - an empty or foreign kind is the usual reason 'vm create' fails with a 400.
+    Write-Host "HCRP machine kind  : '$machineKind'"
+}
+
 # ---------------------------------------------------------------------------
 # Step 1.4. Read the custom location off the vCenter (informational).
 # ---------------------------------------------------------------------------
 
 # 'az connectedvmware vm create' picks this up automatically, but we read it to fail early if it is missing.
-$customLocationId = az connectedvmware vcenter show `
+# The vCenter 'kind' is read too: the service validates the machine kind against this exact value.
+$vCenterJson = az connectedvmware vcenter show `
     --name $VCenterName `
     --resource-group $VCenterResourceGroup `
     --subscription $VCenterSubscriptionId `
-    --query "extendedLocation.name" -o tsv
+    --query "{customLocation:extendedLocation.name, kind:kind}" -o json
 
 # Distinguish "could not read the vCenter" from "the vCenter has no custom location".
 if ($LASTEXITCODE -ne 0) { throw "Failed to read vCenter '$VCenterName' in rg '$VCenterResourceGroup'." }
+
+# Convert the small projection into an object.
+$vCenterInfo = $vCenterJson | ConvertFrom-Json
+
+# The custom location that 'vm create' will stamp on the recreated resource.
+$customLocationId = $vCenterInfo.customLocation
+
+# The kind the HCRP machine must carry - 'VMware' normally, 'AVS' for an AVS-backed vCenter.
+$expectedMachineKind = if ([string]::IsNullOrWhiteSpace($vCenterInfo.kind)) { "VMware" } else { $vCenterInfo.kind }
 
 # Without a custom location the resource bridge is broken and nothing below will work.
 if ([string]::IsNullOrWhiteSpace($customLocationId)) { throw "Could not read extendedLocation.name from vCenter '$VCenterName'. The resource bridge may be broken." }
 
 # Show the custom location that 'vm create' will stamp on the recreated resource.
 Write-Host "Custom location    : $customLocationId"
+Write-Host "Expected kind      : $expectedMachineKind or empty"
 
 # ---------------------------------------------------------------------------
 # Step 2.1. Check whether the virtualMachineInstance ('default') exists.
@@ -255,6 +278,27 @@ Write-Host "Stale link         : $managedResourceId"
 if (-not $vmInstanceExists) { Write-Host "Will recreate placeholder machine '$machineName' in rg '$machineResourceGroup' (sub $machineSubscriptionId)." }
 Write-Host "Will delete the Arc VM '$machineName' to clear the link (the vCenter VM is NOT touched)." -ForegroundColor Yellow
 
+# The recreate in step 2.2 creates a virtualMachineInstance under the existing machine, and the
+# service rejects that with a 400 unless the machine kind matches the vCenter kind exactly.
+# Stop here with the way out rather than letting 'vm create' fail halfway through.
+if ($machineExists -and -not $vmInstanceExists) {
+    # We allow kind empty but if kind is set it must match the expected kind exactly.
+    if (-not [string]::IsNullOrWhiteSpace($machineKind) -and -not $machineKind.Equals($expectedMachineKind, [StringComparison]::OrdinalIgnoreCase)) {
+        # InvalidMachineKindInput: the name collides with a machine owned by another private cloud.
+        Write-Host "`nSTOP: HCRP machine '$machineName' has kind '$machineKind' but this vCenter expects '$expectedMachineKind'." -ForegroundColor Red
+        Write-Host "Step 2.2 would fail with 'InvalidMachineKindInput' (HTTP 400), and 'kind' cannot be changed." -ForegroundColor Red
+        Write-Host "The stale link points at a machine owned by a different Arc private cloud. Ways out:" -ForegroundColor Yellow
+        Write-Host "  1. If that machine is genuinely stale and NOT in use, delete it, then re-run this script" -ForegroundColor Yellow
+        Write-Host "     so the placeholder is recreated with kind='$expectedMachineKind':" -ForegroundColor Yellow
+        Write-Host "     az connectedmachine delete --ids $machineId" -ForegroundColor Yellow
+        Write-Host "  2. If the machine is still in use by that private cloud, do NOT delete it - raise a support" -ForegroundColor Yellow
+        Write-Host "     request to clear managedResourceId on the inventory item server-side." -ForegroundColor Yellow
+        return
+    } else {
+        Write-Host "Placeholder resources for machine '$machineName' already exist and match the expected kind '$expectedMachineKind'. (Note: kind is allowed to be empty)" -ForegroundColor Green
+    }
+}
+
 # When the HCRP machine still exists, deleting it is not the only option - linking is often preferred.
 if ($machineExists) {
     Write-Host "`nNOTE: HCRP machine '$machineName' still exists. Instead of clearing this link you can link" -ForegroundColor Yellow
@@ -294,6 +338,8 @@ if (-not $vmInstanceExists) {
 
     # Confirm the chain is now whole so the delete has something to tear down.
     Write-Host "Placeholder machine and virtualMachineInstance created."
+} else {
+    Write-Host "Placeholder resources already exist for machine '$machineName' in rg '$machineResourceGroup'." -ForegroundColor Green
 }
 
 # ---------------------------------------------------------------------------
