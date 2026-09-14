@@ -5,7 +5,7 @@
 .DESCRIPTION
     This script finds the inventory item, works out which Azure resources are missing, recreates the missing
     placeholder resources, then deletes the Arc VM so the delete clears the stale link.
-    Uses only 'az' CLI commands - no direct REST calls.
+    Uses Azure CLI commands, including 'az rest' to recreate missing placeholder resources.
     Nothing in VMware vCenter is created, modified or deleted by this script.
 
 .EXAMPLE
@@ -129,21 +129,27 @@ $machineExists = ($LASTEXITCODE -eq 0)
 Write-Host "HCRP machine exists: $machineExists"
 
 # ---------------------------------------------------------------------------
-# Step 1.4. Read the custom location off the vCenter (informational).
+# Step 1.4. Read the custom location and region off the vCenter.
 # ---------------------------------------------------------------------------
 
-# 'az connectedvmware vm create' picks this up automatically, but we read it to fail early if it is missing.
-$customLocationId = az connectedvmware vcenter show `
+# Read the values needed to recreate the placeholder resources.
+$vCenterDetailsJson = az connectedvmware vcenter show `
     --name $VCenterName `
     --resource-group $VCenterResourceGroup `
     --subscription $VCenterSubscriptionId `
-    --query "extendedLocation.name" -o tsv
+    --query "{customLocationId:extendedLocation.name, location:location}" -o json
+
+$vCenterDetails = $vCenterDetailsJson | ConvertFrom-Json
+$customLocationId = $vCenterDetails.customLocationId
+$location = $vCenterDetails.location
 
 # Without a custom location the resource bridge is broken and nothing below will work.
 if ([string]::IsNullOrWhiteSpace($customLocationId)) { throw "Could not read extendedLocation.name from vCenter '$VCenterName'. The resource bridge may be broken." }
+if ([string]::IsNullOrWhiteSpace($location)) { throw "Could not read location from vCenter '$VCenterName'." }
 
-# Show the custom location that 'vm create' will stamp on the recreated resource.
+# Show the values that will be stamped on the recreated resources.
 Write-Host "Custom location    : $customLocationId"
+Write-Host "Location           : $location"
 
 # ---------------------------------------------------------------------------
 # Step 2.1. Check whether the virtualMachineInstance ('default') exists.
@@ -178,24 +184,50 @@ if ($CheckOnly) {
 # Step 2.2 / 3.1. Recreate the missing placeholder resources.
 # ---------------------------------------------------------------------------
 
-# Skip this entirely when the chain is already whole - the delete can run as-is.
+# If the HCRP machine is missing, recreate it first with the exact identity from managedResourceId.
+if (-not $machineExists) {
+    Write-Host "`n=== Step 3.1: recreating placeholder HCRP machine ===" -ForegroundColor Cyan
+
+    $machineBody = @{
+        location = $location
+        kind = "VMware"
+        properties = @{}
+    } | ConvertTo-Json -Compress
+
+    az rest `
+        --method put `
+        --uri "https://management.azure.com${machineId}?api-version=2025-02-19-preview" `
+        --headers "Content-Type=application/json" `
+        --body $machineBody `
+        --output none
+
+    Write-Host "Placeholder HCRP machine created."
+}
+
+# If the child resource is missing, recreate it explicitly under the HCRP machine.
 if (-not $vmInstanceExists) {
-    # Banner for the recreate step.
-    Write-Host "`n=== Step 2.2/3.1: recreating placeholder resources ===" -ForegroundColor Cyan
+    Write-Host "`n=== Step 2.2/3.1: recreating virtualMachineInstance ===" -ForegroundColor Cyan
 
-    # 'vm create' creates the HCRP machine with kind=VMware if it is missing, then the 'default' instance.
-    $createArgs = @(
-        "--resource-group", $machineResourceGroup   # must match the resource group in the stale ID
-        "--name", $machineName                      # must match the machine name in the stale ID
-        "--subscription", $machineSubscriptionId    # the machine may live in a different subscription
-        "--inventory-item", $inventoryItemId        # binds the instance back to this inventory item
-    )
+    $vmInstanceBody = @{
+        extendedLocation = @{
+            type = "CustomLocation"
+            name = $customLocationId
+        }
+        properties = @{
+            infrastructureProfile = @{
+                inventoryItemId = $inventoryItemId
+            }
+        }
+    } | ConvertTo-Json -Depth 4 -Compress
 
-    # Run the create - this is the CLI equivalent of the two REST PUTs in the TSG.
-    az connectedvmware vm create @createArgs -o none
+    az rest `
+        --method put `
+        --uri "https://management.azure.com${machineId}/providers/Microsoft.ConnectedVMwarevSphere/virtualMachineInstances/default?api-version=2023-12-01" `
+        --headers "Content-Type=application/json" `
+        --body $vmInstanceBody `
+        --output none
 
-    # Confirm the chain is now whole so the delete has something to tear down.
-    Write-Host "Placeholder machine and virtualMachineInstance created."
+    Write-Host "virtualMachineInstance created."
 }
 
 # ---------------------------------------------------------------------------
