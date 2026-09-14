@@ -43,6 +43,30 @@ $VCenterSubscriptionId = $vCenterIdMatch.Groups[1].Value
 $VCenterResourceGroup = $vCenterIdMatch.Groups[2].Value
 $VCenterName = $vCenterIdMatch.Groups[3].Value
 
+# Run an 'az' existence probe and tell "resource is missing" apart from a genuine failure.
+# Only a not-found error returns $false; anything else (auth, RBAC, throttling, network) throws.
+function Test-AzResourceExists {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$AzArgs,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    # Capture stderr alongside stdout so the failure reason can be inspected.
+    $probeOutput = & az @AzArgs -o none 2>&1
+
+    # Exit code 0 means the resource was read successfully.
+    if ($LASTEXITCODE -eq 0) { return $true }
+
+    # Flatten the captured output into a single string for matching.
+    $probeText = ($probeOutput | Out-String)
+
+    # A not-found error is an expected outcome - report it as "does not exist".
+    if ($probeText -match '(?i)ResourceNotFound|ParentResourceNotFound|\(NotFound\)|was not found|could not be found') { return $false }
+
+    # Any other error means we cannot trust the result - stop instead of acting on bad state.
+    throw "$Description failed with an unexpected error (exit code $LASTEXITCODE): $probeText"
+}
+
 # ---------------------------------------------------------------------------
 # Step 0. Confirm the Azure CLI is available and point it at the vCenter's subscription.
 # ---------------------------------------------------------------------------
@@ -55,6 +79,9 @@ if (-not (Get-Command az -ErrorAction SilentlyContinue)) { throw "Azure CLI ('az
 
 # Set the active subscription so the inventory/vCenter lookups target the right place.
 az account set --subscription $VCenterSubscriptionId | Out-Null
+
+# A failure here means the subscription is wrong or the session is not logged in - stop now.
+if ($LASTEXITCODE -ne 0) { throw "Failed to set the active subscription to '$VCenterSubscriptionId'. Check 'az login' and the subscription id." }
 
 # Confirm to the operator which subscription is now active.
 Write-Host "Using subscription: $VCenterSubscriptionId"
@@ -72,6 +99,9 @@ $inventoryJson = az connectedvmware vcenter inventory-item list `
     --vcenter $VCenterName `
     --subscription $VCenterSubscriptionId `
     --query "[?moName=='$VmName']" -o json
+
+# A failed list tells us nothing about the inventory - do not treat it as "no items found".
+if ($LASTEXITCODE -ne 0) { throw "Failed to list inventory items for vCenter '$VCenterName' in rg '$VCenterResourceGroup'." }
 
 # Convert the JSON array returned by the CLI into PowerShell objects.
 $inventoryItems = @($inventoryJson | ConvertFrom-Json)
@@ -154,11 +184,9 @@ Write-Host "Linked machine     : $machineName (sub $machineSubscriptionId, rg $m
 # Step 1.3. Check whether the HCRP (Arc) machine still exists.
 # ---------------------------------------------------------------------------
 
-# Try to read the Arc machine; suppress output because we only care whether the call succeeded.
-az connectedmachine show --ids $machineId -o none 2>$null
-
-# $LASTEXITCODE is 0 when the machine exists, non-zero when it is gone (ResourceNotFound).
-$machineExists = ($LASTEXITCODE -eq 0)
+# Try to read the Arc machine; a not-found means it is gone, any other error stops the script.
+$machineExists = Test-AzResourceExists -AzArgs @("connectedmachine", "show", "--ids", $machineId) `
+    -Description "Reading HCRP machine '$machineName'"
 
 # Report which branch of the TSG we are on.
 Write-Host "HCRP machine exists: $machineExists"
@@ -174,6 +202,9 @@ $customLocationId = az connectedvmware vcenter show `
     --subscription $VCenterSubscriptionId `
     --query "extendedLocation.name" -o tsv
 
+# Distinguish "could not read the vCenter" from "the vCenter has no custom location".
+if ($LASTEXITCODE -ne 0) { throw "Failed to read vCenter '$VCenterName' in rg '$VCenterResourceGroup'." }
+
 # Without a custom location the resource bridge is broken and nothing below will work.
 if ([string]::IsNullOrWhiteSpace($customLocationId)) { throw "Could not read extendedLocation.name from vCenter '$VCenterName'. The resource bridge may be broken." }
 
@@ -186,14 +217,13 @@ Write-Host "Custom location    : $customLocationId"
 
 # Only bother checking the child resource if the parent machine actually exists.
 if ($machineExists) {
-    # 'vm show' reads the virtualMachineInstance under the HCRP machine; a 404 means it is missing.
-    az connectedvmware vm show `
-        --resource-group $machineResourceGroup `
-        --name $machineName `
-        --subscription $machineSubscriptionId -o none 2>$null
-
-    # Record whether the read succeeded.
-    $vmInstanceExists = ($LASTEXITCODE -eq 0)
+    # 'vm show' reads the virtualMachineInstance under the HCRP machine; a not-found means it is missing.
+    $vmInstanceExists = Test-AzResourceExists -AzArgs @(
+        "connectedvmware", "vm", "show"
+        "--resource-group", $machineResourceGroup
+        "--name", $machineName
+        "--subscription", $machineSubscriptionId
+    ) -Description "Reading virtualMachineInstance for machine '$machineName'"
 } else {
     # If the machine is gone, its child resource cannot exist either.
     $vmInstanceExists = $false
@@ -259,6 +289,9 @@ if (-not $vmInstanceExists) {
     # Run the create - this is the CLI equivalent of the two REST PUTs in the TSG.
     az connectedvmware vm create @createArgs -o none
 
+    # Without the placeholder the delete cannot clear the link - stop rather than delete blindly.
+    if ($LASTEXITCODE -ne 0) { throw "Failed to recreate placeholder resources for machine '$machineName' in rg '$machineResourceGroup'." }
+
     # Confirm the chain is now whole so the delete has something to tear down.
     Write-Host "Placeholder machine and virtualMachineInstance created."
 }
@@ -277,6 +310,9 @@ az connectedvmware vm delete `
     --subscription $machineSubscriptionId `
     --yes -o none
 
+# A failed delete means the link was not cleared - stop instead of reporting a misleading result.
+if ($LASTEXITCODE -ne 0) { throw "Failed to delete the Arc VM '$machineName' in rg '$machineResourceGroup'." }
+
 # Confirm the delete call returned.
 Write-Host "Delete completed."
 
@@ -293,6 +329,9 @@ $verifyJson = az connectedvmware vcenter inventory-item list `
     --vcenter $VCenterName `
     --subscription $VCenterSubscriptionId `
     --query "[?moName=='$VmName'].managedResourceId" -o json
+
+# If the verification read fails we cannot claim success - stop with a clear message.
+if ($LASTEXITCODE -ne 0) { throw "Delete completed, but verifying the inventory item for '$VmName' failed. Re-check the inventory item manually." }
 
 # Convert the result (an array with at most one string) into PowerShell objects.
 $verifyValue = @($verifyJson | ConvertFrom-Json)[0]
