@@ -210,6 +210,36 @@ if ($CheckOnly) {
 }
 
 # ---------------------------------------------------------------------------
+# Step 2.0. Confirm with the operator before changing anything.
+# ---------------------------------------------------------------------------
+
+# Banner for the confirmation step.
+Write-Host "`n=== Step 2.0: confirm before clearing the stale link ===" -ForegroundColor Cyan
+
+# Repeat exactly which inventory item and which stale link are about to be acted on.
+Write-Host "Inventory item     : moName='$($inventoryItem.moName)' name='$($inventoryItem.name)' moRefId='$($inventoryItem.moRefId)' kind='$($inventoryItem.kind)'"
+Write-Host "Inventory item id  : $inventoryItemId"
+Write-Host "Stale link         : $managedResourceId"
+
+# Spell out the write operations so the operator knows what will happen.
+if (-not $vmInstanceExists) { Write-Host "Will recreate placeholder machine '$machineName' in rg '$machineResourceGroup' (sub $machineSubscriptionId)." }
+Write-Host "Will delete the Arc VM '$machineName' to clear the link (the vCenter VM is NOT touched)." -ForegroundColor Yellow
+
+# When the HCRP machine still exists, deleting it is not the only option - linking is often preferred.
+if ($machineExists) {
+    Write-Host "`nNOTE: HCRP machine '$machineName' still exists. Instead of clearing this link you can link" -ForegroundColor Yellow
+    Write-Host "the existing HCRP machine to this vCenter VM by enabling virtual hardware:" -ForegroundColor Yellow
+    Write-Host "https://learn.microsoft.com/en-us/azure/azure-arc/vmware-vsphere/enable-virtual-hardware" -ForegroundColor Yellow
+}
+
+# Require an explicit 'yes' - anything else aborts without making changes.
+$confirmation = Read-Host "`nProceed with clearing the stale link? (yes/no)"
+if ($confirmation -ne "yes") {
+    Write-Host "Aborted - no resources were created or deleted." -ForegroundColor Yellow
+    return
+}
+
+# ---------------------------------------------------------------------------
 # Step 2.2 / 3.1. Recreate the missing placeholder resources.
 # ---------------------------------------------------------------------------
 
