@@ -9,20 +9,15 @@
     Nothing in VMware vCenter is created, modified or deleted by this script.
 
 .EXAMPLE
-    .\clear-stale-vm-link.ps1 -VCenterSubscriptionId "0000...." -VCenterName "my-vcenter" `
-        -VCenterResourceGroup "rg-vcenter" -VmName "my-vm" -CheckOnly
+    .\clear-stale-vm-link.ps1 `
+        -VCenterId "/subscriptions/0000..../resourceGroups/rg-vcenter/providers/Microsoft.ConnectedVMwarevSphere/vCenters/my-vcenter" `
+        -VmName "my-vm" -CheckOnly
 #>
 
 # Script parameters - everything the operator needs to supply for one VM.
 param(
-    # Azure subscription that holds the vCenter resource.
-    [Parameter(Mandatory = $true)][string]$VCenterSubscriptionId,
-
-    # Name of the Microsoft.ConnectedVMwarevSphere/VCenters resource in Azure.
-    [Parameter(Mandatory = $true)][string]$VCenterName,
-
-    # Resource group that holds the vCenter resource.
-    [Parameter(Mandatory = $true)][string]$VCenterResourceGroup,
+    # Full ARM ID of the Microsoft.ConnectedVMwarevSphere/VCenters resource.
+    [Parameter(Mandatory = $true)][string]$VCenterId,
 
     # The VM name as it appears in vCenter (this is the inventory item "moName").
     [Parameter(Mandatory = $true)][string]$VmName,
@@ -33,6 +28,20 @@ param(
 
 # Stop the script on the first unhandled error so we never continue on bad data.
 $ErrorActionPreference = "Stop"
+
+# Parse the vCenter ARM ID into the values required by the Azure CLI commands.
+$vCenterIdMatch = [regex]::Match(
+    $VCenterId.TrimEnd('/'),
+    '(?i)^/subscriptions/([^/]+)/resourceGroups/([^/]+)/providers/Microsoft\.ConnectedVMwarevSphere/vCenters/([^/]+)$'
+)
+
+if (-not $vCenterIdMatch.Success) {
+    throw "Invalid vCenter resource ID: $VCenterId"
+}
+
+$VCenterSubscriptionId = $vCenterIdMatch.Groups[1].Value
+$VCenterResourceGroup = $vCenterIdMatch.Groups[2].Value
+$VCenterName = $vCenterIdMatch.Groups[3].Value
 
 # ---------------------------------------------------------------------------
 # Step 0. Confirm the Azure CLI is available and point it at the vCenter's subscription.
