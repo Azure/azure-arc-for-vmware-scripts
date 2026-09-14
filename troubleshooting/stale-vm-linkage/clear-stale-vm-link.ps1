@@ -79,8 +79,33 @@ $inventoryItems = @($inventoryJson | ConvertFrom-Json)
 # If nothing came back, the VM name does not match any inventory item - stop.
 if ($inventoryItems.Count -eq 0) { throw "No inventory item found with moName '$VmName' in vCenter '$VCenterName'." }
 
-# If more than one matched, the name is ambiguous and we must not guess which one to fix.
-if ($inventoryItems.Count -gt 1) { throw "Found $($inventoryItems.Count) inventory items named '$VmName'. Resolve manually." }
+# If more than one matched, show each item and ask the operator which one to fix.
+if ($inventoryItems.Count -gt 1) {
+    Write-Host "Found $($inventoryItems.Count) inventory items named '$VmName':" -ForegroundColor Yellow
+    for ($index = 0; $index -lt $inventoryItems.Count; $index++) {
+        $candidate = $inventoryItems[$index]
+        Write-Host "  $($index + 1): moName='$($candidate.moName)' name='$($candidate.name)' moRefId='$($candidate.moRefId)' kind='$($candidate.kind)' managedResourceId='$($candidate.managedResourceId)'"
+    }
+    Write-Host "`n0: Exit without selecting an inventory item"
+
+    [int]$selection = -1
+    do {
+        $selectionInput = Read-Host "`nSelect the inventory item to use (0-$($inventoryItems.Count))"
+        $selectionIsValid = [int]::TryParse($selectionInput, [ref]$selection) -and
+            $selection -ge 0 -and $selection -le $inventoryItems.Count
+
+        if (-not $selectionIsValid) {
+            Write-Host "Enter a number from 0 to $($inventoryItems.Count)." -ForegroundColor Yellow
+        }
+    } until ($selectionIsValid)
+
+    if ($selection -eq 0) {
+        Write-Host "No inventory item selected. Exiting without making changes." -ForegroundColor Yellow
+        return
+    }
+
+    $inventoryItems = @($inventoryItems[$selection - 1])
+}
 
 # Take the single matching inventory item.
 $inventoryItem = $inventoryItems[0]
@@ -93,6 +118,7 @@ $managedResourceId = $inventoryItem.managedResourceId
 
 # Show the operator what was found.
 Write-Host "Inventory item id  : $inventoryItemId"
+Write-Host "Inventory item     : moName='$($inventoryItem.moName)' name='$($inventoryItem.name)' moRefId='$($inventoryItem.moRefId)' kind='$($inventoryItem.kind)'"
 Write-Host "managedResourceId  : '$managedResourceId'"
 
 # ---------------------------------------------------------------------------
