@@ -27,9 +27,6 @@ param(
     # The VM name as it appears in vCenter (this is the inventory item "moName").
     [Parameter(Mandatory = $true)][string]$VmName,
 
-    # Optional region override for a recreated placeholder machine; defaults to the vCenter's region.
-    [Parameter(Mandatory = $false)][string]$Location,
-
     # Run every read-only check but skip all create/delete calls - use this to inspect first.
     [Parameter(Mandatory = $false)][switch]$CheckOnly
 )
@@ -193,9 +190,6 @@ if (-not $vmInstanceExists) {
         "--subscription", $machineSubscriptionId    # the machine may live in a different subscription
         "--inventory-item", $inventoryItemId        # binds the instance back to this inventory item
     )
-
-    # Only pass a region when the operator supplied one; otherwise the vCenter's region is used.
-    if ($Location) { $createArgs += @("--location", $Location) }
 
     # Run the create - this is the CLI equivalent of the two REST PUTs in the TSG.
     az connectedvmware vm create @createArgs -o none
