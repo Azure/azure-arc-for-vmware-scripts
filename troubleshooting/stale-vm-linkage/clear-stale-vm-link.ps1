@@ -29,6 +29,25 @@ param(
 # Stop the script on the first unhandled error so we never continue on bad data.
 $ErrorActionPreference = "Stop"
 
+# ---------------------------------------------------------------------------
+# Prerequisite. The Arc resource bridge must be running before anything else.
+# ---------------------------------------------------------------------------
+
+# Banner for the prerequisite check.
+Write-Host "=== Prerequisite: Azure Arc resource bridge ===" -ForegroundColor Cyan
+
+# Every step below depends on the bridge - inventory reads and the recreate/delete all go through it.
+Write-Host "This script requires the Azure Arc resource bridge for this vCenter to be up and running." -ForegroundColor Yellow
+Write-Host "If the bridge is offline, the inventory lookups and the recreate/delete steps will fail," -ForegroundColor Yellow
+Write-Host "and the stale link will not be cleared." -ForegroundColor Yellow
+
+# Make the operator confirm the bridge is healthy before we touch anything.
+$bridgeConfirmation = Read-Host "`nIs the Azure Arc resource bridge up and running? (yes/no)"
+if ($bridgeConfirmation -ne "yes") {
+    Write-Host "Aborted - bring the resource bridge online, then re-run this script." -ForegroundColor Yellow
+    return
+}
+
 # Parse the vCenter ARM ID into the values required by the Azure CLI commands.
 $vCenterIdMatch = [regex]::Match(
     $VCenterId.TrimEnd('/'),
