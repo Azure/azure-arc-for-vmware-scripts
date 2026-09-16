@@ -368,6 +368,13 @@ if (-not $vmInstanceExists) {
 # Banner for the delete step.
 Write-Host "`n=== Step 2.3/3.2: deleting the Arc VM (vCenter VM is NOT touched) ===" -ForegroundColor Cyan
 
+# Require the operator to explicitly confirm the destructive operation immediately before it runs.
+$deleteConfirmation = Read-Host "Type 'delete' to confirm deletion of Arc VM '$machineName'"
+if ($deleteConfirmation -cne "delete") {
+    Write-Host "Aborted - the Arc VM was not deleted." -ForegroundColor Yellow
+    return
+}
+
 # Delete the Arc-side resources using the names from the stale link; --yes skips the confirmation prompt.
 az connectedvmware vm delete `
     --resource-group $machineResourceGroup `
