@@ -16,6 +16,23 @@
     Uses only 'az' CLI commands - no direct REST calls.
     Nothing in VMware vCenter is created, modified or deleted by this script.
 
+.NOTES
+    READ BEFORE RUNNING AT SCALE.
+
+    Before clearing VMs in bulk, make sure the customer understands every parameter and switch of
+    this script, in particular that -Delete recreates placeholder resources and then deletes the
+    Arc VM resources for every VM in the list.
+
+    The batch assumes the following pre-conditions, which the script cannot verify for you:
+      1. If any VM in the list was previously linked to a different vCenter, it has already been
+         offboarded cleanly from that vCenter.
+      2. Every VM in the list lives in the same Azure location as the vCenter resource
+         (for example "eastus", "australiaeast").
+
+    If either pre-condition is not met, terminate the script at the confirmation prompt, offboard
+    those VMs cleanly, and re-run once the pre-conditions hold. Every run - report-only as well as
+    -Delete - requires the operator to type "I confirm" before the script proceeds.
+
 .EXAMPLE
     # Report only - no changes are made.
     .\clear-stale-vm-link-batch.ps1 `
@@ -175,7 +192,7 @@ $vCenterJson = az connectedvmware vcenter show `
     --name $VCenterName `
     --resource-group $VCenterResourceGroup `
     --subscription $VCenterSubscriptionId `
-    --query "{customLocation:extendedLocation.name, kind:kind, connectionStatus:connectionStatus}" -o json
+    --query "{customLocation:extendedLocation.name, kind:kind, connectionStatus:connectionStatus, location:location}" -o json
 
 # Distinguish "could not read the vCenter" from "the vCenter has no custom location".
 if ($LASTEXITCODE -ne 0) { throw "Failed to read vCenter '$VCenterName' in rg '$VCenterResourceGroup'." }
@@ -201,6 +218,33 @@ if (-not [string]::IsNullOrWhiteSpace($vCenterInfo.connectionStatus) -and $vCent
 Write-Host "Custom location    : $customLocationId"
 Write-Host "Expected kind      : $expectedMachineKind or empty"
 Write-Host "Connection status  : $(if ([string]::IsNullOrWhiteSpace($vCenterInfo.connectionStatus)) { '(not reported)' } else { $vCenterInfo.connectionStatus })"
+Write-Host "vCenter location   : $(if ([string]::IsNullOrWhiteSpace($vCenterInfo.location)) { '(not reported)' } else { $vCenterInfo.location })"
+
+# ---------------------------------------------------------------------------
+# Step 0.4. Pre-condition gate - the operator must confirm the pre-conditions in writing.
+# ---------------------------------------------------------------------------
+
+# State the pre-conditions the script cannot verify, so the operator accepts them knowingly.
+# This gate applies to every run - report-only as well as -Delete - because the assumptions below
+# decide whether the reported outcome is trustworthy, not just whether the deletes are safe.
+Write-Host "`n=== WARNING: confirm the pre-conditions before continuing ===" -ForegroundColor Red
+Write-Host "This run covers all $($vmNameList.Count) VM(s) listed above in $(if ($Delete) { 'DELETE mode - placeholder resources will be recreated and Arc VM resources DELETED' } else { 'REPORT ONLY mode - nothing will be created or deleted' })." -ForegroundColor Yellow
+Write-Host "Before continuing, confirm the customer understands the parameters and switches of this script." -ForegroundColor Yellow
+Write-Host "`nThis batch assumes:" -ForegroundColor Yellow
+Write-Host "  1. Any VM previously linked to a different vCenter has already been offboarded cleanly from that vCenter." -ForegroundColor Yellow
+Write-Host "  2. Every VM listed is in the same Azure location as this vCenter ('$($vCenterInfo.location)')." -ForegroundColor Yellow
+Write-Host "`nIf either assumption does not hold, stop here, offboard those VMs cleanly, and re-run afterwards." -ForegroundColor Yellow
+
+# A typed phrase - not a keypress - so the acknowledgement is deliberate. Case is ignored.
+$confirmation = Read-Host "`nType 'I confirm' to continue, or anything else to abort"
+
+# Anything other than the exact phrase (ignoring case and surrounding spaces) aborts the run.
+if ($confirmation.Trim() -ine "I confirm") {
+    throw "Aborted by the operator: confirmation phrase 'I confirm' was not entered. No changes were made."
+}
+
+# Record the acknowledgement in the log alongside the actions that follow.
+Write-Host "Confirmed - continuing." -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
 # Step 1. Read the whole inventory once and index it by VM name.
