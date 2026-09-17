@@ -59,10 +59,24 @@ function Test-AzResourceExists {
     )
 
     # Capture stderr alongside stdout so the failure reason can be inspected.
-    $probeOutput = & az @AzArgs -o none 2>&1
+    #
+    # The '2>&1' merge is run inside a child scope that sets $ErrorActionPreference to 'Continue'.
+    # Reason: this script runs with $ErrorActionPreference = 'Stop'. When a native command's stderr
+    # is merged into the success stream, Windows PowerShell wraps every stderr line in a
+    # NativeCommandError record, and under 'Stop' that record is thrown as a terminating error -
+    # so the function dies before the exit code below is ever read. The Azure CLI writes harmless
+    # chatter to stderr on successful calls (for example the Python "SyntaxWarning: invalid escape
+    # sequence" emitted by the connectedvmware extension), which made a perfectly good GET look
+    # like a failure. Relaxing the preference for this one call keeps the rest of the script strict
+    # while letting the exit code - not the presence of stderr text - decide the outcome.
+    $probeOutput = & { $ErrorActionPreference = 'Continue'; & az @AzArgs -o none 2>&1 }
 
-    # Exit code 0 means the resource was read successfully.
-    if ($LASTEXITCODE -eq 0) { return $true }
+    # Exit code 0 means the resource was read successfully, regardless of any stderr noise above.
+    if ($LASTEXITCODE -eq 0) {
+        # Surface the ignored stderr text at verbose level so the noise is still diagnosable.
+        if ($probeOutput) { Write-Verbose "$Description succeeded (exit code 0); ignoring stderr output: $($probeOutput | Out-String)" }
+        return $true
+    }
 
     # Flatten the captured output into a single string for matching.
     $probeText = ($probeOutput | Out-String)
