@@ -294,11 +294,14 @@ foreach ($vmName in $vmNameList) {
     # Track position in the batch so a long run is easy to follow.
     $vmIndex++
 
-    # Banner per VM.
-    Write-Host "`n=== [$vmIndex/$($vmNameList.Count)] $vmName ===" -ForegroundColor Cyan
+    # Banner per VM, with a timestamp so a long run can be followed and timed.
+    Write-Host "`n=== [$vmIndex/$($vmNameList.Count)] $vmName === ($(Get-Date -Format 'HH:mm:ss'))" -ForegroundColor Cyan
 
     try {
         # --- Step 2.1. Find the inventory item for this VM and read its managedResourceId. ---
+
+        # Say what is running before it runs, so a slow step is obvious.
+        Write-Host "[$vmName] Step 2.1: looking up '$vmName' in the vCenter inventory..."
 
         # Look the name up in the index built from the single inventory read.
         $matchingItems = @($inventoryByName[$vmName])
@@ -363,6 +366,9 @@ foreach ($vmName in $vmNameList) {
 
         # --- Step 2.3. Check whether the HCRP (Arc) machine and its VM instance still exist. ---
 
+        # Say which Azure read is running.
+        Write-Host "[$vmName] Step 2.3: reading HCRP machine '$machineName' (az connectedmachine show)..."
+
         # Try to read the Arc machine; a not-found means it is gone, any other error stops the script.
         $machineExists = Test-AzResourceExists -AzArgs @("connectedmachine", "show", "--ids", $machineId) `
             -Description "Reading HCRP machine '$machineName'"
@@ -370,6 +376,9 @@ foreach ($vmName in $vmNameList) {
         # The 'kind' on an existing machine decides whether a VM instance can be created under it.
         $machineKind = $null
         if ($machineExists) {
+            # Say which Azure read is running.
+            Write-Host "[$vmName] Step 2.3: reading the 'kind' of HCRP machine '$machineName'..."
+
             $machineKind = az connectedmachine show --ids $machineId --query "kind" -o tsv
 
             # Without the kind we cannot tell whether the recreate below would be rejected.
@@ -378,6 +387,9 @@ foreach ($vmName in $vmNameList) {
 
         # Only bother checking the child resource if the parent machine actually exists.
         if ($machineExists) {
+            # Say which Azure read is running.
+            Write-Host "[$vmName] Step 2.3: reading virtualMachineInstance for machine '$machineName' (az connectedvmware vm show)..."
+
             # 'vm show' reads the virtualMachineInstance under the HCRP machine; a not-found means it is missing.
             $vmInstanceExists = Test-AzResourceExists -AzArgs @(
                 "connectedvmware", "vm", "show"
@@ -451,6 +463,7 @@ foreach ($vmName in $vmNameList) {
             )
 
             # Run the create - this is the CLI equivalent of the two REST PUTs in the TSG.
+            Write-Host "[$vmName] Step 2.6: recreating placeholder machine '$machineName' in rg '$machineResourceGroup' (sub $machineSubscriptionId)..." -ForegroundColor Yellow
             az connectedvmware vm create @createArgs -o none
 
             # Without the placeholder the delete cannot clear the link - skip this VM rather than delete blindly.
@@ -463,6 +476,7 @@ foreach ($vmName in $vmNameList) {
         # --- Step 2.7. Delete the Arc VM - this is what actually clears the stale link. ---
 
         # Delete the Arc-side resources using the names from the stale link; --yes skips the CLI confirmation prompt.
+        Write-Host "[$vmName] Step 2.7: deleting Arc VM '$machineName' in rg '$machineResourceGroup' to clear the link (the vCenter VM is NOT touched)..." -ForegroundColor Yellow
         az connectedvmware vm delete `
             --resource-group $machineResourceGroup `
             --name $machineName `
@@ -478,6 +492,7 @@ foreach ($vmName in $vmNameList) {
         # --- Step 2.8. Verify that managedResourceId is now empty. ---
 
         # Re-read just this inventory item - the cached list from step 1 is now out of date for this VM.
+        Write-Host "[$vmName] Step 2.8: re-reading the inventory item to verify managedResourceId is now empty..."
         $verifyJson = az connectedvmware vcenter inventory-item list `
             --resource-group $VCenterResourceGroup `
             --vcenter $VCenterName `
