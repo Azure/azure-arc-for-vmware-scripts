@@ -225,15 +225,22 @@ $machineExists = Test-AzResourceExists -AzArgs @("connectedmachine", "show", "--
 Write-Host "HCRP machine exists: $machineExists"
 
 # The 'kind' on an existing machine decides whether a VM instance can be created under it.
+# The 'location' matters too - the machine must sit in the same Azure region as the vCenter.
 $machineKind = $null
+$machineLocation = $null
 if ($machineExists) {
-    $machineKind = az connectedmachine show --ids $machineId --query "kind" -o tsv
+    $machineJson = az connectedmachine show --ids $machineId --query "{kind:kind, location:location}" -o json
 
-    # Without the kind we cannot tell whether the recreate in step 2.2 would be rejected.
-    if ($LASTEXITCODE -ne 0) { throw "Failed to read the 'kind' property of HCRP machine '$machineName'." }
+    # Without these properties we cannot tell whether the recreate in step 2.2 would be rejected.
+    if ($LASTEXITCODE -ne 0) { throw "Failed to read the 'kind'/'location' properties of HCRP machine '$machineName'." }
 
-    # Show it - an empty or foreign kind is the usual reason 'vm create' fails with a 400.
+    $machineInfo = $machineJson | ConvertFrom-Json
+    $machineKind = $machineInfo.kind
+    $machineLocation = $machineInfo.location
+
+    # Show them - an empty or foreign kind is the usual reason 'vm create' fails with a 400.
     Write-Host "HCRP machine kind  : '$machineKind'"
+    Write-Host "HCRP machine region: '$machineLocation'"
 }
 
 # ---------------------------------------------------------------------------
@@ -246,7 +253,7 @@ $vCenterJson = az connectedvmware vcenter show `
     --name $VCenterName `
     --resource-group $VCenterResourceGroup `
     --subscription $VCenterSubscriptionId `
-    --query "{customLocation:extendedLocation.name, kind:kind}" -o json
+    --query "{customLocation:extendedLocation.name, kind:kind, location:location}" -o json
 
 # Distinguish "could not read the vCenter" from "the vCenter has no custom location".
 if ($LASTEXITCODE -ne 0) { throw "Failed to read vCenter '$VCenterName' in rg '$VCenterResourceGroup'." }
@@ -260,12 +267,16 @@ $customLocationId = $vCenterInfo.customLocation
 # The kind the HCRP machine must carry - 'VMware' normally, 'AVS' for an AVS-backed vCenter.
 $expectedMachineKind = if ([string]::IsNullOrWhiteSpace($vCenterInfo.kind)) { "VMware" } else { $vCenterInfo.kind }
 
+# The Azure region of the vCenter - an existing HCRP machine must already sit in this region.
+$vCenterLocation = $vCenterInfo.location
+
 # Without a custom location the resource bridge is broken and nothing below will work.
 if ([string]::IsNullOrWhiteSpace($customLocationId)) { throw "Could not read extendedLocation.name from vCenter '$VCenterName'. The resource bridge may be broken." }
 
 # Show the custom location that 'vm create' will stamp on the recreated resource.
 Write-Host "Custom location    : $customLocationId"
 Write-Host "Expected kind      : $expectedMachineKind or empty"
+Write-Host "vCenter region     : $vCenterLocation"
 
 # ---------------------------------------------------------------------------
 # Step 2.1. Check whether the virtualMachineInstance ('default') exists.
@@ -287,6 +298,20 @@ if ($machineExists) {
 
 # Report the state of the child resource.
 Write-Host "VM instance exists : $vmInstanceExists"
+
+# When the instance exists, read which vCenter it is currently linked to - it may not be this one.
+$linkedVCenterId = $null
+if ($vmInstanceExists) {
+    $linkedVCenterId = az connectedvmware vm show `
+        --resource-group $machineResourceGroup `
+        --name $machineName `
+        --subscription $machineSubscriptionId `
+        --query "infrastructureProfile.vCenterId" -o tsv
+
+    if ($LASTEXITCODE -ne 0) { throw "Failed to read the linked vCenter of the virtualMachineInstance for machine '$machineName'." }
+
+    Write-Host "Linked vCenter     : '$linkedVCenterId'"
+}
 
 # In check-only mode, stop here before anything is created or deleted.
 if ($CheckOnly) {
@@ -330,6 +355,52 @@ if ($machineExists -and -not $vmInstanceExists) {
     } else {
         Write-Host "Placeholder resources for machine '$machineName' already exist and match the expected kind '$expectedMachineKind'. (Note: kind is allowed to be empty)" -ForegroundColor Green
     }
+}
+
+# A pre-existing machine/instance can belong somewhere else: a different Azure region, or a
+# different vCenter. Neither can be re-pointed in place - the only way to link this VM to the
+# input vCenter is to offboard (delete) the existing Arc resources first. Explain and ask.
+$conflictReasons = @()
+
+if ($machineExists -and -not [string]::IsNullOrWhiteSpace($machineLocation) -and
+    $machineLocation.Replace(' ', '').ToLowerInvariant() -ne $vCenterLocation.Replace(' ', '').ToLowerInvariant()) {
+    $conflictReasons += "The Arc machine '$machineName' already exists in Azure region '$machineLocation', but vCenter '$VCenterName' is in region '$vCenterLocation'. An existing resource cannot be moved to another region."
+}
+
+if ($vmInstanceExists -and -not [string]::IsNullOrWhiteSpace($linkedVCenterId) -and
+    $linkedVCenterId.TrimEnd('/') -ne $VCenterId.TrimEnd('/')) {
+    $conflictReasons += "The Arc machine '$machineName' already has a virtualMachineInstance linked to a different vCenter:`n    $linkedVCenterId`n  The vCenter supplied to this script is:`n    $VCenterId"
+}
+
+if ($conflictReasons.Count -gt 0) {
+    Write-Host "`nWARNING: this VM is already onboarded to Azure somewhere else." -ForegroundColor Red
+    foreach ($reason in $conflictReasons) { Write-Host "  - $reason" -ForegroundColor Red }
+    Write-Host "`nWhat this means:" -ForegroundColor Yellow
+    Write-Host "  To link this VM to vCenter '$VCenterName', the existing Arc resources listed above must be" -ForegroundColor Yellow
+    Write-Host "  offboarded (deleted) first. That removes the current Azure representation of this VM -" -ForegroundColor Yellow
+    Write-Host "  along with its Azure resource ID, tags, RBAC assignments, extensions and guest management -" -ForegroundColor Yellow
+    Write-Host "  and any automation or policy that targets that resource ID will stop working." -ForegroundColor Yellow
+    Write-Host "  The VM in VMware vCenter itself is NOT touched." -ForegroundColor Yellow
+    Write-Host "`nIf those resources are still in use, answer 'no' and confirm with the owning team first." -ForegroundColor Yellow
+
+    $conflictConfirmation = Read-Host "`nOffboard the existing Arc resources for '$machineName' and continue? (yes/no)"
+    if ($conflictConfirmation -ne "yes") {
+        Write-Host "Aborted - no resources were created or deleted." -ForegroundColor Yellow
+        return
+    }
+
+    # Consent given: offboard by deleting the existing Arc machine (this removes its
+    # virtualMachineInstance too). The steps below then recreate a placeholder bound to the
+    # input vCenter and delete it, which is what clears the stale link.
+    Write-Host "Offboarding existing Arc machine '$machineName'..." -ForegroundColor Yellow
+    az connectedmachine delete --ids $machineId --yes -o none
+    if ($LASTEXITCODE -ne 0) { throw "Failed to offboard the existing Arc machine '$machineName'. Delete it manually, then re-run this script." }
+
+    Write-Host "Offboard completed - the existing Arc resources were deleted." -ForegroundColor Green
+
+    # The Arc resources are gone, so the steps below must recreate the placeholder from scratch.
+    $machineExists = $false
+    $vmInstanceExists = $false
 }
 
 # When the HCRP machine still exists, deleting it is not the only option - linking is often preferred.
