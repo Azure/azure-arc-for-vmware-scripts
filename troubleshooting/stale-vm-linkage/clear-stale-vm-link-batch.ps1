@@ -5,13 +5,14 @@
 .DESCRIPTION
     Batch version of clear-stale-vm-link.ps1. It follows the same process for every VM supplied
     (find the inventory item, work out which Azure resources are missing, recreate the missing
-    placeholder resources, then delete the Arc VM so the delete clears the stale link) but it never
-    prompts: the VM list is supplied up front and the destructive half of the process only runs when
-    -Delete is passed.
+    Arc machine and virtualMachineInstance resources from the actual vCenter VMs, then delete the Arc
+    VM so the delete clears the stale link) but it never prompts: the VM list is supplied up front and
+    the destructive half of the process only runs when -Delete is passed.
 
     Without -Delete the script is read-only: it reports what it would do for every VM.
-    With -Delete it recreates the placeholder resources and deletes the Arc VM for every VM that is
-    safe to act on. A VM that cannot be handled safely is reported and skipped - the batch continues.
+    With -Delete it recreates the Arc VM resources from the actual vCenter VMs and deletes the Arc VM
+    for every VM that is safe to act on. A VM that cannot be handled safely is reported and skipped -
+    the batch continues.
 
     Uses only 'az' CLI commands - no direct REST calls.
     Nothing in VMware vCenter is created, modified or deleted by this script.
@@ -20,8 +21,8 @@
     READ BEFORE RUNNING AT SCALE.
 
     Before clearing VMs in bulk, make sure the customer understands every parameter and switch of
-    this script, in particular that -Delete recreates placeholder resources and then deletes the
-    Arc VM resources for every VM in the list.
+    this script, in particular that -Delete recreates Arc resources from the actual vCenter VMs and
+    then deletes the Arc VM resources for every VM in the list.
 
     The batch assumes the following pre-conditions, which the script cannot verify for you:
       1. If any VM in the list was previously linked to a different vCenter, it has already been
@@ -57,7 +58,7 @@ param(
     # Text file holding one VM name per line. Blank lines and lines starting with '#' are ignored.
     [Parameter(Mandatory = $true, ParameterSetName = "File")][string]$VmNameFile,
 
-    # Without this switch the run is read-only. With it, placeholders are recreated and the Arc VMs are deleted.
+    # Without this switch the run is read-only. With it, Arc resources are recreated from the vCenter VMs and then deleted.
     [Parameter(Mandatory = $false)][switch]$Delete,
 
     # Optional path to write the per-VM result table as CSV.
@@ -165,7 +166,7 @@ if ($vmNameList.Count -eq 0) { throw "No VM names were supplied." }
 
 # Show the size of the batch and the mode it will run in.
 Write-Host "VMs to process     : $($vmNameList.Count)"
-Write-Host "Mode               : $(if ($Delete) { 'DELETE - placeholders will be recreated and Arc VMs deleted' } else { 'REPORT ONLY - no resources will be created or deleted (pass -Delete to act)' })" -ForegroundColor $(if ($Delete) { "Yellow" } else { "Green" })
+Write-Host "Mode               : $(if ($Delete) { 'DELETE - Arc resources will be recreated from the vCenter VMs and then deleted' } else { 'REPORT ONLY - no resources will be created or deleted (pass -Delete to act)' })" -ForegroundColor $(if ($Delete) { "Yellow" } else { "Green" })
 
 # ---------------------------------------------------------------------------
 # Step 0.2. Confirm the Azure CLI is available and point it at the vCenter's subscription.
@@ -228,7 +229,7 @@ Write-Host "vCenter location   : $(if ([string]::IsNullOrWhiteSpace($vCenterInfo
 # This gate applies to every run - report-only as well as -Delete - because the assumptions below
 # decide whether the reported outcome is trustworthy, not just whether the deletes are safe.
 Write-Host "`n=== WARNING: confirm the pre-conditions before continuing ===" -ForegroundColor Red
-Write-Host "This run covers all $($vmNameList.Count) VM(s) listed above in $(if ($Delete) { 'DELETE mode - placeholder resources will be recreated and Arc VM resources DELETED' } else { 'REPORT ONLY mode - nothing will be created or deleted' })." -ForegroundColor Yellow
+Write-Host "This run covers all $($vmNameList.Count) VM(s) listed above in $(if ($Delete) { 'DELETE mode - Arc resources will be recreated from the vCenter VMs and then DELETED' } else { 'REPORT ONLY mode - nothing will be created or deleted' })." -ForegroundColor Yellow
 Write-Host "Before continuing, confirm the customer understands the parameters and switches of this script." -ForegroundColor Yellow
 Write-Host "`nThis batch assumes:" -ForegroundColor Yellow
 Write-Host "  1. Any VM previously linked to a different vCenter has already been offboarded cleanly from that vCenter." -ForegroundColor Yellow
@@ -344,13 +345,13 @@ foreach ($vmName in $vmNameList) {
             continue
         }
 
-        # Pull the subscription id out of the stale ID - the placeholder must be recreated here.
+        # Pull the subscription id out of the stale ID - the Arc VM resources must be recreated here.
         $machineSubscriptionId = [regex]::Match($managedResourceId, '(?i)/subscriptions/([^/]+)').Groups[1].Value
 
-        # Pull the resource group out of the stale ID - the placeholder must be recreated here.
+        # Pull the resource group out of the stale ID - the Arc VM resources must be recreated here.
         $machineResourceGroup = [regex]::Match($managedResourceId, '(?i)/resourceGroups/([^/]+)').Groups[1].Value
 
-        # Pull the HCRP machine name out of the stale ID - the placeholder must reuse this exact name.
+        # Pull the HCRP machine name out of the stale ID - the recreated Arc VM resources must reuse this exact name.
         $machineName = [regex]::Match($managedResourceId, '(?i)/machines/([^/]+)').Groups[1].Value
 
         # If any of the three could not be parsed, the ID is not in a shape this script understands.
@@ -432,7 +433,7 @@ foreach ($vmName in $vmNameList) {
 
         # The plan is the same set of writes step 2.6 would perform.
         $plannedActions = @()
-        if (-not $vmInstanceExists) { $plannedActions += "recreate placeholder machine '$machineName' in rg '$machineResourceGroup' (sub $machineSubscriptionId)" }
+        if (-not $vmInstanceExists) { $plannedActions += "recreate Arc resources from vCenter VM '$vmName' as machine '$machineName' in rg '$machineResourceGroup' (sub $machineSubscriptionId)" }
         $plannedActions += "delete Arc VM '$machineName' to clear the link (the vCenter VM is NOT touched)"
 
         if (-not $Delete) {
@@ -450,7 +451,7 @@ foreach ($vmName in $vmNameList) {
             continue
         }
 
-        # --- Step 2.6. Recreate the missing placeholder resources. ---
+        # --- Step 2.6. Recreate the missing Arc VM resources from the actual vCenter VM. ---
 
         # Skip this entirely when the chain is already whole - the delete can run as-is.
         if (-not $vmInstanceExists) {
@@ -463,16 +464,16 @@ foreach ($vmName in $vmNameList) {
             )
 
             # Run the create - this is the CLI equivalent of the two REST PUTs in the TSG.
-            Write-Host "[$vmName] Step 2.6: recreating placeholder machine '$machineName' in rg '$machineResourceGroup' (sub $machineSubscriptionId)..." -ForegroundColor Yellow
+            Write-Host "[$vmName] Step 2.6: recreating Arc resources from the vCenter VM as machine '$machineName' in rg '$machineResourceGroup' (sub $machineSubscriptionId)..." -ForegroundColor Yellow
             az connectedvmware vm create @createArgs -o none
 
-            # Without the placeholder the delete cannot clear the link - skip this VM rather than delete blindly.
-            if ($LASTEXITCODE -ne 0) { throw "Failed to recreate placeholder resources for machine '$machineName' in rg '$machineResourceGroup'." }
+            # Without the recreated Arc VM resources the delete cannot clear the link - skip this VM rather than delete blindly.
+            if ($LASTEXITCODE -ne 0) { throw "Failed to recreate Arc resources from vCenter VM '$vmName' as machine '$machineName' in rg '$machineResourceGroup'." }
 
             # Confirm the chain is now whole so the delete has something to tear down.
-            Write-Host "[$vmName] Step 2.6: placeholder machine and virtualMachineInstance created." -ForegroundColor Yellow
+            Write-Host "[$vmName] Step 2.6: Arc machine and virtualMachineInstance recreated from the vCenter VM." -ForegroundColor Yellow
         } else {
-            Write-Host "[$vmName] Step 2.6: placeholder machine '$machineName' already exists in rg '$machineResourceGroup' (sub $machineSubscriptionId)." -ForegroundColor Yellow
+            Write-Host "[$vmName] Step 2.6: Arc VM resources for machine '$machineName' already exist in rg '$machineResourceGroup' (sub $machineSubscriptionId)." -ForegroundColor Yellow
         }
 
         # --- Step 2.7. Delete the Arc VM - this is what actually clears the stale link. ---
@@ -553,6 +554,25 @@ if ($ReportPath) {
 # Remind the operator that a report-only run changed nothing, and how to act on it.
 if (-not $Delete) {
     Write-Host "`nREPORT ONLY - no resources were created or deleted. Re-run with -Delete to clear the links above." -ForegroundColor Yellow
+    Write-Host "Because -Delete was not supplied, no Arc VM resources were recreated and no offboarding action is required." -ForegroundColor Yellow
+
+    foreach ($result in @($results | Where-Object { $_.Status -eq "WouldClear" })) {
+        $targetMatch = [regex]::Match(
+            $result.StaleLink,
+            '(?i)^/subscriptions/([^/]+)/resourceGroups/([^/]+)/providers/Microsoft\.HybridCompute/machines/([^/]+)'
+        )
+
+        if ($targetMatch.Success) {
+            $targetSubscriptionId = $targetMatch.Groups[1].Value
+            $targetResourceGroup = $targetMatch.Groups[2].Value
+            $targetMachineName = $targetMatch.Groups[3].Value
+
+            Write-Host "`n[$($result.VmName)] Arc resources would be recreated in subscription '$targetSubscriptionId', resource group '$targetResourceGroup', with name '$targetMachineName'." -ForegroundColor Yellow
+            Write-Host "If resources are recreated there and that is not where you want the VM onboarded, offboard it in the Azure portal or run:" -ForegroundColor Yellow
+            Write-Host "NOTE: This delete operation removes only the Azure resource for the VM. It does not delete the actual on-premises VM." -ForegroundColor Yellow
+            Write-Host "  az connectedvmware vm delete --resource-group `"$targetResourceGroup`" --name `"$targetMachineName`" --subscription `"$targetSubscriptionId`" --yes" -ForegroundColor Yellow
+        }
+    }
 }
 
 # A non-zero exit code lets a caller detect that some VMs need attention.
