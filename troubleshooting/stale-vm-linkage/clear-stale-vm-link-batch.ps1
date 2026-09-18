@@ -470,7 +470,9 @@ foreach ($vmName in $vmNameList) {
             if ($LASTEXITCODE -ne 0) { throw "Failed to recreate placeholder resources for machine '$machineName' in rg '$machineResourceGroup'." }
 
             # Confirm the chain is now whole so the delete has something to tear down.
-            Write-Host "Placeholder machine and virtualMachineInstance created."
+            Write-Host "[$vmName] Step 2.6: placeholder machine and virtualMachineInstance created." -ForegroundColor Yellow
+        } else {
+            Write-Host "[$vmName] Step 2.6: placeholder machine '$machineName' already exists in rg '$machineResourceGroup' (sub $machineSubscriptionId)." -ForegroundColor Yellow
         }
 
         # --- Step 2.7. Delete the Arc VM - this is what actually clears the stale link. ---
@@ -487,7 +489,7 @@ foreach ($vmName in $vmNameList) {
         if ($LASTEXITCODE -ne 0) { throw "Failed to delete the Arc VM '$machineName' in rg '$machineResourceGroup'." }
 
         # Confirm the delete call returned.
-        Write-Host "Delete completed."
+        Write-Host "[$vmName] Step 2.7: delete completed." -ForegroundColor Yellow
 
         # --- Step 2.8. Verify that managedResourceId is now empty. ---
 
@@ -501,7 +503,7 @@ foreach ($vmName in $vmNameList) {
 
         # If the verification read fails we cannot claim success - report it as unverified.
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "Delete completed, but the verification read failed. Re-check this inventory item manually." -ForegroundColor Yellow
+            Write-Host "[$vmName] Step 2.8: Delete completed, but the verification read failed. Re-check this inventory item manually." -ForegroundColor Yellow
             $results += New-VmResult -VmName $vmName -Status "Unverified" -MachineName $machineName -StaleLink $managedResourceId `
                 -Detail "Delete completed, but re-reading the inventory item failed."
             continue
@@ -512,7 +514,7 @@ foreach ($vmName in $vmNameList) {
 
         # An empty value means the stale link is gone and the VM can be Arc-enabled again.
         if ([string]::IsNullOrWhiteSpace($verifyValue)) {
-            Write-Host "SUCCESS: managedResourceId is now empty - the stale link has been cleared." -ForegroundColor Green
+            Write-Host "[$vmName] Step 2.8: SUCCESS: managedResourceId is now empty - the stale link has been cleared." -ForegroundColor Green
             $results += New-VmResult -VmName $vmName -Status "Cleared" -MachineName $machineName -StaleLink $managedResourceId `
                 -Detail "managedResourceId is now empty."
         } else {
