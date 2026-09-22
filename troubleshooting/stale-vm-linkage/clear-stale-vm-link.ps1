@@ -43,8 +43,8 @@ Write-Host "If the bridge is offline, the inventory lookups and the recreate/del
 Write-Host "and the stale link will not be cleared." -ForegroundColor Yellow
 
 # Make the operator confirm the bridge is healthy before we touch anything.
-$bridgeConfirmation = Read-Host "`nIs the Azure Arc resource bridge up and running? (yes/no)"
-if ($bridgeConfirmation -ne "yes") {
+$bridgeConfirmation = Read-Host "`nIs the Azure Arc resource bridge up and running? (yes/y/no/n)"
+if ($bridgeConfirmation -notin @("yes", "y")) {
     Write-Host "Aborted - bring the resource bridge online, then re-run this script." -ForegroundColor Yellow
     return
 }
@@ -340,9 +340,9 @@ if ($machineExists) {
     Write-Host "https://learn.microsoft.com/en-us/azure/azure-arc/vmware-vsphere/enable-virtual-hardware" -ForegroundColor Yellow
 }
 
-# Require an explicit 'yes' - anything else aborts without making changes.
-$confirmation = Read-Host "`nProceed with clearing the stale link? (yes/no)"
-if ($confirmation -ne "yes") {
+# Require an explicit 'yes' or 'y' - anything else aborts without making changes.
+$confirmation = Read-Host "`nProceed with clearing the stale link? (yes/y/no/n)"
+if ($confirmation -notin @("yes", "y")) {
     Write-Host "Aborted - no resources were created or deleted." -ForegroundColor Yellow
     return
 }
