@@ -6,13 +6,15 @@
     Batch version of clear-stale-vm-link.ps1. It follows the same process for every VM supplied
     (find the inventory item, work out which Azure resources are missing, recreate the missing
     Arc machine and virtualMachineInstance resources from the actual vCenter VMs, then delete the Arc
-    VM so the delete clears the stale link) but it never prompts: the VM list is supplied up front and
-    the destructive half of the process only runs when -Delete is passed.
+    VM so the delete clears the stale link) but it never prompts for individual VMs: the VM list is
+    supplied up front and deletion only runs when -Delete is passed.
 
-    Without -Delete the script is read-only: it reports what it would do for every VM.
-    With -Delete it recreates the Arc VM resources from the actual vCenter VMs and deletes the Arc VM
-    for every VM that is safe to act on. A VM that cannot be handled safely is reported and skipped -
-    the batch continues.
+    Without -Delete the script is not read-only: it recreates missing Arc VM resources from the actual
+    vCenter VMs, but does not delete them. With -Delete it also deletes the Arc VM for every VM that is
+    safe to act on. A VM that cannot be handled safely is reported and skipped - the batch continues.
+
+    With -CheckOnly the script performs Azure GET operations only, reports what it would create and
+    delete, and can still write the local CSV report specified by -ReportPath.
 
     Uses only 'az' CLI commands - no direct REST calls.
     Nothing in VMware vCenter is created, modified or deleted by this script.
@@ -31,17 +33,23 @@
          (for example "eastus", "australiaeast").
 
     If either pre-condition is not met, terminate the script at the confirmation prompt, offboard
-    those VMs cleanly, and re-run once the pre-conditions hold. Every run - report-only as well as
-    -Delete - requires the operator to type "I confirm" before the script proceeds.
+    those VMs cleanly, and re-run once the pre-conditions hold. Every run - including -CheckOnly -
+    requires the operator to type "I confirm" before the script proceeds.
 
 .EXAMPLE
-    # Report only - no changes are made.
+    # Check only - Azure GET operations only; no resources are created or deleted.
     .\clear-stale-vm-link-batch.ps1 `
         -VCenterId "/subscriptions/0000..../resourceGroups/rg-vcenter/providers/Microsoft.ConnectedVMwarevSphere/vCenters/my-vcenter" `
-        -VmNames "vm-a","vm-b","vm-c"
+        -VmNames "vm-a","vm-b","vm-c" -CheckOnly -ReportPath .\result.csv
 
 .EXAMPLE
-    # Read the VM names from a file (one name per line) and clear the links.
+    # Read the VM names from a file and recreate missing Arc resources without deleting them.
+    .\clear-stale-vm-link-batch.ps1 `
+        -VCenterId "/subscriptions/0000..../resourceGroups/rg-vcenter/providers/Microsoft.ConnectedVMwarevSphere/vCenters/my-vcenter" `
+        -VmNameFile .\vms.txt -ReportPath .\result.csv
+
+.EXAMPLE
+    # Read the VM names from a file and clear the links.
     .\clear-stale-vm-link-batch.ps1 `
         -VCenterId "/subscriptions/0000..../resourceGroups/rg-vcenter/providers/Microsoft.ConnectedVMwarevSphere/vCenters/my-vcenter" `
         -VmNameFile .\vms.txt -Delete -ReportPath .\result.csv
@@ -58,8 +66,11 @@ param(
     # Text file holding one VM name per line. Blank lines and lines starting with '#' are ignored.
     [Parameter(Mandatory = $true, ParameterSetName = "File")][string]$VmNameFile,
 
-    # Without this switch the run is read-only. With it, Arc resources are recreated from the vCenter VMs and then deleted.
+    # Also delete the Arc VM resources after recreating anything missing.
     [Parameter(Mandatory = $false)][switch]$Delete,
+
+    # Perform Azure GET operations only. The local CSV report can still be written when -ReportPath is supplied.
+    [Parameter(Mandatory = $false)][switch]$CheckOnly,
 
     # Optional path to write the per-VM result table as CSV.
     [Parameter(Mandatory = $false)][string]$ReportPath
@@ -67,6 +78,9 @@ param(
 
 # Stop the script on the first unhandled error so we never continue on bad data.
 $ErrorActionPreference = "Stop"
+
+# Check-only and delete are mutually exclusive modes.
+if ($CheckOnly -and $Delete) { throw "-CheckOnly and -Delete cannot be used together." }
 
 # Run an 'az' existence probe and tell "resource is missing" apart from a genuine failure.
 # Only a not-found error returns $false; anything else (auth, RBAC, throttling, network) throws.
@@ -166,23 +180,23 @@ if ($vmNameList.Count -eq 0) { throw "No VM names were supplied." }
 
 # Show the size of the batch and the mode it will run in.
 Write-Host "VMs to process     : $($vmNameList.Count)"
-Write-Host "Mode               : $(if ($Delete) { 'DELETE - Arc resources will be recreated from the vCenter VMs and then deleted' } else { 'REPORT ONLY - no resources will be created or deleted (pass -Delete to act)' })" -ForegroundColor $(if ($Delete) { "Yellow" } else { "Green" })
+if ($CheckOnly) {
+    Write-Host "Mode               : CHECK ONLY - Azure GET operations only; no resources will be created or deleted" -ForegroundColor Green
+} elseif ($Delete) {
+    Write-Host "Mode               : DELETE - missing Arc resources will be recreated, then the Arc VMs will be deleted" -ForegroundColor Yellow
+} else {
+    Write-Host "Mode               : RECREATE ONLY - missing Arc resources may be created; no Arc VMs will be deleted" -ForegroundColor Yellow
+}
 
 # ---------------------------------------------------------------------------
-# Step 0.2. Confirm the Azure CLI is available and point it at the vCenter's subscription.
+# Step 0.2. Confirm the Azure CLI is available.
 # ---------------------------------------------------------------------------
 
 # Fail early with a clear message if the az CLI is not installed or not on PATH.
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) { throw "Azure CLI ('az') was not found on PATH." }
 
-# Set the active subscription so the inventory/vCenter lookups target the right place.
-az account set --subscription $VCenterSubscriptionId | Out-Null
-
-# A failure here means the subscription is wrong or the session is not logged in - stop now.
-if ($LASTEXITCODE -ne 0) { throw "Failed to set the active subscription to '$VCenterSubscriptionId'. Check 'az login' and the subscription id." }
-
-# Confirm to the operator which subscription is now active.
-Write-Host "Using subscription : $VCenterSubscriptionId"
+# Every Azure command passes its subscription explicitly, including in -CheckOnly mode.
+Write-Host "vCenter subscription: $VCenterSubscriptionId"
 
 # ---------------------------------------------------------------------------
 # Step 0.3. Read the vCenter once - custom location, kind and resource bridge health.
@@ -226,10 +240,16 @@ Write-Host "vCenter location   : $(if ([string]::IsNullOrWhiteSpace($vCenterInfo
 # ---------------------------------------------------------------------------
 
 # State the pre-conditions the script cannot verify, so the operator accepts them knowingly.
-# This gate applies to every run - report-only as well as -Delete - because the assumptions below
+# This gate applies to every run - including -CheckOnly - because the assumptions below
 # decide whether the reported outcome is trustworthy, not just whether the deletes are safe.
 Write-Host "`n=== WARNING: confirm the pre-conditions before continuing ===" -ForegroundColor Red
-Write-Host "This run covers all $($vmNameList.Count) VM(s) listed above in $(if ($Delete) { 'DELETE mode - Arc resources will be recreated from the vCenter VMs and then DELETED' } else { 'REPORT ONLY mode - nothing will be created or deleted' })." -ForegroundColor Yellow
+if ($CheckOnly) {
+    Write-Host "This run covers all $($vmNameList.Count) VM(s) listed above in CHECK ONLY mode - Azure GET operations only; nothing will be created or deleted." -ForegroundColor Yellow
+} elseif ($Delete) {
+    Write-Host "This run covers all $($vmNameList.Count) VM(s) listed above in DELETE mode - missing Arc resources will be recreated, then the Arc VMs will be DELETED." -ForegroundColor Yellow
+} else {
+    Write-Host "This run covers all $($vmNameList.Count) VM(s) listed above in RECREATE ONLY mode - missing Arc resources may be created, but Arc VMs will not be deleted." -ForegroundColor Yellow
+}
 Write-Host "Before continuing, confirm the customer understands the parameters and switches of this script." -ForegroundColor Yellow
 Write-Host "`nThis batch assumes:" -ForegroundColor Yellow
 Write-Host "  1. Any VM previously linked to a different vCenter has already been offboarded cleanly from that vCenter." -ForegroundColor Yellow
@@ -429,14 +449,14 @@ foreach ($vmName in $vmNameList) {
             continue
         }
 
-        # --- Step 2.5. In report-only mode, record the planned actions and move on. ---
+        # --- Step 2.5. In check-only mode, record the planned actions and move on. ---
 
         # The plan is the same set of writes step 2.6 would perform.
         $plannedActions = @()
         if (-not $vmInstanceExists) { $plannedActions += "recreate Arc resources from vCenter VM '$vmName' as machine '$machineName' in rg '$machineResourceGroup' (sub $machineSubscriptionId)" }
         $plannedActions += "delete Arc VM '$machineName' to clear the link (the vCenter VM is NOT touched)"
 
-        if (-not $Delete) {
+        if ($CheckOnly) {
             # Spell out what would happen so the report is actionable on its own.
             Write-Host "Would: $($plannedActions -join '; ')." -ForegroundColor Yellow
 
@@ -474,6 +494,14 @@ foreach ($vmName in $vmNameList) {
             Write-Host "[$vmName] Step 2.6: Arc machine and virtualMachineInstance recreated from the vCenter VM." -ForegroundColor Yellow
         } else {
             Write-Host "[$vmName] Step 2.6: Arc VM resources for machine '$machineName' already exist in rg '$machineResourceGroup' (sub $machineSubscriptionId)." -ForegroundColor Yellow
+        }
+
+        # Without -Delete, leave the Arc resources in place and report that deletion is still required.
+        if (-not $Delete) {
+            Write-Host "[$vmName] -Delete was not specified. Arc VM '$machineName' was not deleted, so the stale link remains." -ForegroundColor Yellow
+            $results += New-VmResult -VmName $vmName -Status "ReadyToDelete" -MachineName $machineName -StaleLink $managedResourceId `
+                -Detail "Missing Arc resources were recreated if required. The Arc VM was not deleted, so managedResourceId remains linked."
+            continue
         }
 
         # --- Step 2.7. Delete the Arc VM - this is what actually clears the stale link. ---
@@ -551,10 +579,11 @@ if ($ReportPath) {
     Write-Host "`nReport written to: $ReportPath"
 }
 
-# Remind the operator that a report-only run changed nothing, and how to act on it.
-if (-not $Delete) {
-    Write-Host "`nREPORT ONLY - no resources were created or deleted. Re-run with -Delete to clear the links above." -ForegroundColor Yellow
-    Write-Host "Because -Delete was not supplied, no Arc VM resources were recreated and no offboarding action is required." -ForegroundColor Yellow
+# Remind the operator what the selected non-delete mode did, and how to act on it.
+if ($CheckOnly) {
+    Write-Host "`nCHECK ONLY - only Azure GET operations were performed; no resources were created or deleted." -ForegroundColor Yellow
+    if ($ReportPath) { Write-Host "The local CSV report was written to '$ReportPath'." -ForegroundColor Yellow }
+    Write-Host "Re-run without -CheckOnly to recreate missing resources, and add -Delete to clear the links." -ForegroundColor Yellow
 
     foreach ($result in @($results | Where-Object { $_.Status -eq "WouldClear" })) {
         $targetMatch = [regex]::Match(
@@ -573,6 +602,9 @@ if (-not $Delete) {
             Write-Host "  az connectedvmware vm delete --resource-group `"$targetResourceGroup`" --name `"$targetMachineName`" --subscription `"$targetSubscriptionId`" --yes" -ForegroundColor Yellow
         }
     }
+} elseif (-not $Delete) {
+    Write-Host "`nRECREATE ONLY - missing Arc resources may have been created, but no Arc VMs were deleted." -ForegroundColor Yellow
+    Write-Host "The stale links remain. Re-run with -Delete after reviewing the report to clear them." -ForegroundColor Yellow
 }
 
 # A non-zero exit code lets a caller detect that some VMs need attention.
