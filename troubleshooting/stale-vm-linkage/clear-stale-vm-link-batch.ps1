@@ -582,7 +582,6 @@ if ($ReportPath) {
 # Remind the operator what the selected non-delete mode did, and how to act on it.
 if ($CheckOnly) {
     Write-Host "`nCHECK ONLY - only Azure GET operations were performed; no resources were created or deleted." -ForegroundColor Yellow
-    if ($ReportPath) { Write-Host "The local CSV report was written to '$ReportPath'." -ForegroundColor Yellow }
     Write-Host "Re-run without -CheckOnly to recreate missing resources, and add -Delete to clear the links." -ForegroundColor Yellow
 
     foreach ($result in @($results | Where-Object { $_.Status -eq "WouldClear" })) {
@@ -605,6 +604,12 @@ if ($CheckOnly) {
 } elseif (-not $Delete) {
     Write-Host "`nRECREATE ONLY - missing Arc resources may have been created, but no Arc VMs were deleted." -ForegroundColor Yellow
     Write-Host "The stale links remain. Re-run with -Delete after reviewing the report to clear them." -ForegroundColor Yellow
+}
+
+# Keep the report visible in both non-delete modes and repeat the CSV location when one was requested.
+if (-not $Delete) {
+    Write-Host "The per-VM report is shown above." -ForegroundColor Yellow
+    if ($ReportPath) { Write-Host "The local CSV report was written to '$ReportPath'." -ForegroundColor Yellow }
 }
 
 # A non-zero exit code lets a caller detect that some VMs need attention.
