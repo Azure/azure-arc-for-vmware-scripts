@@ -309,8 +309,14 @@ Write-Host "Inventory item id  : $inventoryItemId"
 Write-Host "Stale link         : $managedResourceId"
 
 # Spell out the write operations so the operator knows what will happen.
-if (-not $vmInstanceExists) { Write-Host "Will recreate Arc resources for vCenter VM '$VmName' as machine '$machineName' in rg '$machineResourceGroup' (sub $machineSubscriptionId)." }
-Write-Host "Will delete the Arc VM '$machineName' to clear the link (the vCenter VM is NOT touched)." -ForegroundColor Yellow
+if (-not $vmInstanceExists) {
+    Write-Host "Will recreate Arc resources for vCenter VM '$VmName' as machine '$machineName' in rg '$machineResourceGroup' (sub $machineSubscriptionId)."
+}
+if ($machineExists) {
+    Write-Host "At the end, you can choose whether to delete or keep the existing Arc machine." -ForegroundColor Yellow
+} else {
+    Write-Host "The Arc machine does not exist. The script will recreate it temporarily, then delete it automatically to clear the stale link." -ForegroundColor Yellow
+}
 
 # The recreate in step 2.2 creates a virtualMachineInstance under the existing machine, and the
 # service rejects that with a 400 unless the machine kind matches the vCenter kind exactly.
@@ -380,21 +386,30 @@ if (-not $vmInstanceExists) {
 # Step 2.3 / 3.2. Delete the Arc VM - this is what actually clears the stale link.
 # ---------------------------------------------------------------------------
 
-# Banner for the delete step.
-Write-Host "`n=== Step 2.3/3.2: deleting the Arc VM (vCenter VM is NOT touched) ===" -ForegroundColor Cyan
-
-# Require the operator to explicitly confirm the destructive operation immediately before it runs.
-$deleteConfirmation = Read-Host "Type 'delete' to confirm deletion of Arc VM '$machineName'"
-if ($deleteConfirmation -cne "delete") {
-    Write-Host "Aborted - the Arc VM was not deleted." -ForegroundColor Yellow
-    Write-Host "The Arc VM resource remains in subscription '$machineSubscriptionId', resource group '$machineResourceGroup', with name '$machineName'." -ForegroundColor Yellow
-    Write-Host "If this is not the subscription or resource group where you want the VM onboarded, offboard it in the Azure portal or run:" -ForegroundColor Yellow
-    Write-Host "NOTE: This delete operation removes only the Azure resource for the VM. It does not delete the actual on-premises VM." -ForegroundColor Yellow
-    Write-Host "  az connectedvmware vm delete --resource-group `"$machineResourceGroup`" --name `"$machineName`" --subscription `"$machineSubscriptionId`" --yes" -ForegroundColor Yellow
-    return
+# Explain whether this step is a customer decision or an automatic cleanup.
+if ($machineExists) {
+    Write-Host "`n=== Step 2.3/3.2: choose whether to delete or keep the Arc VM ===" -ForegroundColor Cyan
+} else {
+    Write-Host "`n=== Step 2.3/3.2: deleting the temporary Arc VM (vCenter VM is NOT touched) ===" -ForegroundColor Cyan
 }
 
-# Delete the Arc-side resources using the names from the stale link; --yes skips the confirmation prompt.
+# A machine that existed before this run may still be useful, so let the operator choose whether to keep it.
+if ($machineExists) {
+    $deleteConfirmation = Read-Host "Type 'delete' to delete Arc VM '$machineName', or type 'keep' to leave it in place"
+    if ($deleteConfirmation -cne "delete") {
+        Write-Host "Keeping the existing Arc VM. The stale link was not cleared." -ForegroundColor Yellow
+        Write-Host "The Arc VM resource remains in subscription '$machineSubscriptionId', resource group '$machineResourceGroup', with name '$machineName'." -ForegroundColor Yellow
+        Write-Host "If this is not the subscription or resource group where you want the VM onboarded, offboard it in the Azure portal or run:" -ForegroundColor Yellow
+        Write-Host "NOTE: This delete operation removes only the Azure resource for the VM. It does not delete the actual on-premises VM." -ForegroundColor Yellow
+        Write-Host "  az connectedvmware vm delete --resource-group `"$machineResourceGroup`" --name `"$machineName`" --subscription `"$machineSubscriptionId`" --yes" -ForegroundColor Yellow
+        return
+    }
+} else {
+    # This machine was created only to repair the stale link, so no second deletion prompt is needed.
+    Write-Host "The Arc machine was created by this run and will now be deleted automatically." -ForegroundColor Yellow
+}
+
+# Delete the Arc-side resources using the names from the stale link; --yes skips the CLI confirmation prompt.
 az connectedvmware vm delete `
     --resource-group $machineResourceGroup `
     --name $machineName `
