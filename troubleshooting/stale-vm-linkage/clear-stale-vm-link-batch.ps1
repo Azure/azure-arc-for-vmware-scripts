@@ -176,7 +176,8 @@ Write-Host "Mode               : $(if ($Delete) { 'DELETE - Arc resources will b
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) { throw "Azure CLI ('az') was not found on PATH." }
 
 # Set the active subscription so the inventory/vCenter lookups target the right place.
-az account set --subscription $VCenterSubscriptionId | Out-Null
+# Scope Continue to each az call so stderr warnings stay visible without bypassing the exit-code check.
+& { $ErrorActionPreference = 'Continue'; az account set --subscription $VCenterSubscriptionId | Out-Null }
 
 # A failure here means the subscription is wrong or the session is not logged in - stop now.
 if ($LASTEXITCODE -ne 0) { throw "Failed to set the active subscription to '$VCenterSubscriptionId'. Check 'az login' and the subscription id." }
@@ -189,11 +190,14 @@ Write-Host "Using subscription : $VCenterSubscriptionId"
 # ---------------------------------------------------------------------------
 
 # Every step below depends on the Arc resource bridge, so its status is checked instead of asking the operator.
-$vCenterJson = az connectedvmware vcenter show `
-    --name $VCenterName `
-    --resource-group $VCenterResourceGroup `
-    --subscription $VCenterSubscriptionId `
-    --query "{customLocation:extendedLocation.name, kind:kind, connectionStatus:connectionStatus, location:location}" -o json
+$vCenterJson = & {
+    $ErrorActionPreference = 'Continue'
+    az connectedvmware vcenter show `
+        --name $VCenterName `
+        --resource-group $VCenterResourceGroup `
+        --subscription $VCenterSubscriptionId `
+        --query "{customLocation:extendedLocation.name, kind:kind, connectionStatus:connectionStatus, location:location}" -o json
+}
 
 # Distinguish "could not read the vCenter" from "the vCenter has no custom location".
 if ($LASTEXITCODE -ne 0) { throw "Failed to read vCenter '$VCenterName' in rg '$VCenterResourceGroup'." }
@@ -255,17 +259,21 @@ Write-Host "Confirmed - continuing." -ForegroundColor Green
 Write-Host "`n=== Step 1: reading the vCenter inventory ===" -ForegroundColor Cyan
 
 # One list call serves the whole batch - far cheaper than a filtered call per VM.
-$inventoryJson = az connectedvmware vcenter inventory-item list `
-    --resource-group $VCenterResourceGroup `
-    --vcenter $VCenterName `
-    --subscription $VCenterSubscriptionId `
-    --query "[?kind=='VirtualMachine']" -o json
+$inventoryJson = & {
+    $ErrorActionPreference = 'Continue'
+    az connectedvmware vcenter inventory-item list `
+        --resource-group $VCenterResourceGroup `
+        --vcenter $VCenterName `
+        --subscription $VCenterSubscriptionId `
+        --query "[?kind=='VirtualMachine']" -o json
+}
 
 # A failed list tells us nothing about the inventory - do not treat it as "no items found".
 if ($LASTEXITCODE -ne 0) { throw "Failed to list inventory items for vCenter '$VCenterName' in rg '$VCenterResourceGroup'." }
 
 # Convert the JSON array returned by the CLI into PowerShell objects.
-$allInventoryItems = @($inventoryJson | ConvertFrom-Json)
+# Explicitly enumerate the array because Windows PowerShell 5.1 returns it as one pipeline object.
+$allInventoryItems = @($inventoryJson | ConvertFrom-Json | ForEach-Object { $_ })
 
 # Group by moName so each VM in the batch is a dictionary lookup rather than another API call.
 $inventoryByName = @{}
@@ -380,7 +388,7 @@ foreach ($vmName in $vmNameList) {
             # Say which Azure read is running.
             Write-Host "[$vmName] Step 2.3: reading the 'kind' of HCRP machine '$machineName'..."
 
-            $machineKind = az connectedmachine show --ids $machineId --query "kind" -o tsv
+            $machineKind = & { $ErrorActionPreference = 'Continue'; az connectedmachine show --ids $machineId --query "kind" -o tsv }
 
             # Without the kind we cannot tell whether the recreate below would be rejected.
             if ($LASTEXITCODE -ne 0) { throw "Failed to read the 'kind' property of HCRP machine '$machineName'." }
@@ -465,7 +473,7 @@ foreach ($vmName in $vmNameList) {
 
             # Run the create - this is the CLI equivalent of the two REST PUTs in the TSG.
             Write-Host "[$vmName] Step 2.6: recreating Arc resources from the vCenter VM as machine '$machineName' in rg '$machineResourceGroup' (sub $machineSubscriptionId)..." -ForegroundColor Yellow
-            az connectedvmware vm create @createArgs -o none
+            & { $ErrorActionPreference = 'Continue'; az connectedvmware vm create @createArgs -o none }
 
             # Without the recreated Arc VM resources the delete cannot clear the link - skip this VM rather than delete blindly.
             if ($LASTEXITCODE -ne 0) { throw "Failed to recreate Arc resources from vCenter VM '$vmName' as machine '$machineName' in rg '$machineResourceGroup'." }
@@ -480,11 +488,14 @@ foreach ($vmName in $vmNameList) {
 
         # Delete the Arc-side resources using the names from the stale link; --yes skips the CLI confirmation prompt.
         Write-Host "[$vmName] Step 2.7: deleting Arc VM '$machineName' in rg '$machineResourceGroup' to clear the link (the vCenter VM is NOT touched)..." -ForegroundColor Yellow
-        az connectedvmware vm delete `
-            --resource-group $machineResourceGroup `
-            --name $machineName `
-            --subscription $machineSubscriptionId `
-            --yes -o none
+        & {
+            $ErrorActionPreference = 'Continue'
+            az connectedvmware vm delete `
+                --resource-group $machineResourceGroup `
+                --name $machineName `
+                --subscription $machineSubscriptionId `
+                --yes -o none
+        }
 
         # A failed delete means the link was not cleared - report it instead of a misleading result.
         if ($LASTEXITCODE -ne 0) { throw "Failed to delete the Arc VM '$machineName' in rg '$machineResourceGroup'." }
@@ -496,11 +507,14 @@ foreach ($vmName in $vmNameList) {
 
         # Re-read just this inventory item - the cached list from step 1 is now out of date for this VM.
         Write-Host "[$vmName] Step 2.8: re-reading the inventory item to verify managedResourceId is now empty..."
-        $verifyJson = az connectedvmware vcenter inventory-item list `
-            --resource-group $VCenterResourceGroup `
-            --vcenter $VCenterName `
-            --subscription $VCenterSubscriptionId `
-            --query "[?moName=='$vmName'].managedResourceId" -o json
+        $verifyJson = & {
+            $ErrorActionPreference = 'Continue'
+            az connectedvmware vcenter inventory-item list `
+                --resource-group $VCenterResourceGroup `
+                --vcenter $VCenterName `
+                --subscription $VCenterSubscriptionId `
+                --query "[?moName=='$vmName'].managedResourceId" -o json
+        }
 
         # If the verification read fails we cannot claim success - report it as unverified.
         if ($LASTEXITCODE -ne 0) {
