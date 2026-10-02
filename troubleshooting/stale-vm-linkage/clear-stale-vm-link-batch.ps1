@@ -16,6 +16,8 @@
 
     Uses only 'az' CLI commands - no direct REST calls.
     Nothing in VMware vCenter is created, modified or deleted by this script.
+    Missing or unavailable required CLI extensions are repaired locally before Azure reads,
+    including in report-only mode.
 
 .NOTES
     READ BEFORE RUNNING AT SCALE.
@@ -174,6 +176,47 @@ Write-Host "Mode               : $(if ($Delete) { 'DELETE - Arc resources will b
 
 # Fail early with a clear message if the az CLI is not installed or not on PATH.
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) { throw "Azure CLI ('az') was not found on PATH." }
+
+# Check local tooling before any Azure resource reads. Warning-only stderr is not a failure.
+Write-Host "Checking required Azure CLI extensions..."
+$extensionsJson = & { $ErrorActionPreference = 'Continue'; az extension list --query "[].name" -o json }
+if ($LASTEXITCODE -ne 0) { throw "Failed to list installed Azure CLI extensions. Check the Azure CLI installation before retrying." }
+$installedExtensions = @($extensionsJson | ConvertFrom-Json | ForEach-Object { $_ })
+$requiredCommands = @(
+    @{ Extension = 'connectedvmware'; Arguments = @('connectedvmware', 'vm', 'show', '--help') }
+    @{ Extension = 'connectedmachine'; Arguments = @('connectedmachine', 'show', '--help') }
+)
+$repairExtensions = $false
+foreach ($command in $requiredCommands) {
+    if ($command.Extension -notin $installedExtensions) {
+        $repairExtensions = $true
+        continue
+    }
+    $commandArgs = $command.Arguments
+    & { $ErrorActionPreference = 'Continue'; az @commandArgs | Out-Null }
+    if ($LASTEXITCODE -ne 0) { $repairExtensions = $true }
+}
+
+if ($repairExtensions) {
+    Write-Host "A required CLI extension is missing or unavailable. Repairing local CLI extensions before continuing (also applies to report-only mode)." -ForegroundColor Yellow
+    foreach ($extension in @('connectedvmware', 'connectedmachine')) {
+        $action = if ($extension -in $installedExtensions) { 'update' } else { 'add' }
+        Write-Host "Running: az extension $action --name $extension"
+        & { $ErrorActionPreference = 'Continue'; az extension $action --name $extension -o none }
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to $action Azure CLI extension '$extension'. Resolve the CLI error and rerun 'az extension $action --name $extension' before retrying this script."
+        }
+    }
+
+    # A successful installer exit is not enough: commands must now load successfully.
+    foreach ($command in $requiredCommands) {
+        $commandArgs = $command.Arguments
+        & { $ErrorActionPreference = 'Continue'; az @commandArgs | Out-Null }
+        if ($LASTEXITCODE -ne 0) {
+            throw "Azure CLI command '$($command.Arguments -join ' ')' is still unavailable after extension repair. Check Azure CLI compatibility and the extension installation before retrying."
+        }
+    }
+}
 
 # Set the active subscription so the inventory/vCenter lookups target the right place.
 # Scope Continue to each az call so stderr warnings stay visible without bypassing the exit-code check.
