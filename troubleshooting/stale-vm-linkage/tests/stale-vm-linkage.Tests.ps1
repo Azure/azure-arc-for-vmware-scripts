@@ -3,6 +3,13 @@
 <#
 .SYNOPSIS
     Offline regression tests for both stale-link scripts on Windows.
+.DESCRIPTION
+    Goal: allow harmless native warnings without weakening the scripts' safety gates.
+    Successful flows must target the linked Azure resources, recreate only what is
+    missing, delete in order, and verify before claiming success. Exception flows
+    must stop unsafe follow-up actions and expose the failure, while a batch must
+    continue processing independent VMs and preserve each outcome in its CSV report.
+    These tests validate script decisions and CLI arguments, not Azure service behavior.
 .EXAMPLE
     Invoke-Pester .\troubleshooting\stale-vm-linkage\tests -Output Detailed
 .NOTES
@@ -38,7 +45,8 @@ BeforeAll {
             [bool]$NativeErrors,
             [hashtable]$Overrides = @{},
             [switch]$ReadOnly,
-            [string]$Decision = 'proceed'
+            [string]$Decision = 'proceed',
+            [string]$VCenterId = '/subscriptions/s/resourceGroups/r/providers/Microsoft.ConnectedVMwarevSphere/vCenters/v'
         )
 
         $directory = New-Item -ItemType Directory -Path (Join-Path $TestDrive ([guid]::NewGuid().ToString()))
@@ -49,6 +57,8 @@ BeforeAll {
             CallsPath = $callsPath; EmitWarning = $true
             MachineExists = $true; InstanceExists = $false
             VmNames = @('vm-a'); ErrorText = 'AuthorizationFailed: simulated failure'
+            MachineKind = 'VMware'; VCenterKind = 'VMware'; ConnectionStatus = 'Connected'
+            CustomLocation = '/subscriptions/s/resourceGroups/r/providers/Microsoft.ExtendedLocation/customLocations/c'
         }
         foreach ($key in $Overrides.Keys) { $config[$key] = $Overrides[$key] }
         $config | ConvertTo-Json | Set-Content -LiteralPath $configPath -Encoding UTF8
@@ -56,7 +66,7 @@ BeforeAll {
         $fileName = if ($Kind -eq 'batch') { 'clear-stale-vm-link-batch.ps1' } else { 'clear-stale-vm-link.ps1' }
         $file = Join-Path (Split-Path $testsRoot -Parent) $fileName
         $fixture = Join-Path $testsRoot 'fixtures\az.cmd'
-        $parameters = @{ VCenterId = '/subscriptions/s/resourceGroups/r/providers/Microsoft.ConnectedVMwarevSphere/vCenters/v' }
+        $parameters = @{ VCenterId = $VCenterId }
         if ($Kind -eq 'batch') {
             $parameters.VmNames = $config.VmNames
             $parameters.Delete = -not $ReadOnly
@@ -122,6 +132,8 @@ Describe '<Kind> script (native error preference: <NativeErrors>)' -ForEach $run
         $runParameters = @{ Kind = $Kind; NativeErrors = $NativeErrors }
     }
 
+    # Regression goal: stderr is diagnostic, not proof of failure. Check visible warnings,
+    # clean JSON/TSV consumption, final verification, and isolation of the Continue preference.
     It 'keeps warning-only stderr visible and JSON/TSV usable through create, delete, and verification' {
         $result = Invoke-StaleLinkScenario @runParameters
         $result.Failure | Should -BeNullOrEmpty
@@ -144,6 +156,67 @@ Describe '<Kind> script (native error preference: <NativeErrors>)' -ForEach $run
         $result.Messages | Should -Match 'SUCCESS:'
     }
 
+    # Lifecycle goal: validate the entire command sequence, not just a success message.
+    # Exact argument checks ensure recreation/deletion use the stale ID and inventory item,
+    # and that an existing instance is never unnecessarily recreated.
+    It 'completes the ordered successful flow for <Scenario>' -ForEach @(
+        @{ Scenario = 'a missing machine'; MachineExists = $false; InstanceExists = $false }
+        @{ Scenario = 'a missing VM instance'; MachineExists = $true; InstanceExists = $false }
+        @{ Scenario = 'an existing VM instance'; MachineExists = $true; InstanceExists = $true }
+    ) {
+        $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
+            MachineExists = $MachineExists; InstanceExists = $InstanceExists; EmitWarning = $false
+        }
+        $expected = if ($Kind -eq 'batch') { @('account', 'vcenter', 'inventory', 'machine') }
+                    else { @('account', 'inventory', 'machine') }
+        if ($MachineExists) { $expected += 'kind' }
+        if ($Kind -eq 'single') { $expected += 'vcenter' }
+        if ($MachineExists) { $expected += 'show' }
+        if (-not $InstanceExists) { $expected += 'create' }
+        $expected += @('delete', 'verify')
+        ($result.Calls.Operation -join ',') | Should -Be ($expected -join ',')
+        $result.Failure | Should -BeNullOrEmpty
+        $result.ExitCode | Should -Be 0
+        $result.Messages | Should -Match 'SUCCESS: managedResourceId is now empty'
+
+        foreach ($call in @($result.Calls | Where-Object { $_.Operation -in @('create', 'delete') })) {
+            $expectedArgs = @('connectedvmware', 'vm', $call.Operation,
+                '--resource-group', 'r', '--name', 'vm-a', '--subscription', 's')
+            if ($call.Operation -eq 'create') {
+                $expectedArgs += @('--inventory-item', '/subscriptions/s/resourceGroups/r/providers/Microsoft.ConnectedVMwarevSphere/vCenters/v/inventoryItems/vm-a')
+            } else { $expectedArgs += '--yes' }
+            $expectedArgs += @('-o', 'none')
+            ($call.Arguments -join '|') | Should -Be ($expectedArgs -join '|')
+        }
+        if ($Kind -eq 'batch') {
+            $result.Rows.Count | Should -Be 1
+            $result.Rows[0].VmName | Should -Be 'vm-a'
+            $result.Rows[0].MachineName | Should -Be 'vm-a'
+            $result.Rows[0].StaleLink | Should -Be '/subscriptions/s/resourceGroups/r/providers/Microsoft.HybridCompute/machines/vm-a'
+            $result.Rows[0].Status | Should -Be 'Cleared'
+        }
+    }
+
+    # Compatibility goal: accepted kind values must still reach create/delete/verify.
+    # Empty kinds, case differences, and AVS must not be mistaken for a foreign machine.
+    It 'allows compatible kinds: <Scenario>' -ForEach @(
+        @{ Scenario = 'empty machine kind'; MachineKind = ''; VCenterKind = 'VMware' }
+        @{ Scenario = 'case-insensitive match'; MachineKind = 'vmware'; VCenterKind = 'VMware' }
+        @{ Scenario = 'AVS match'; MachineKind = 'AVS'; VCenterKind = 'AVS' }
+        @{ Scenario = 'default vCenter kind'; MachineKind = 'VMware'; VCenterKind = '' }
+    ) {
+        $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
+            MachineKind = $MachineKind; VCenterKind = $VCenterKind
+        }
+        $result.Failure | Should -BeNullOrEmpty
+        $result.ExitCode | Should -Be 0
+        ($result.Calls[-3..-1].Operation -join ',') | Should -Be 'create,delete,verify'
+        $result.Messages | Should -Match 'SUCCESS:'
+        if ($Kind -eq 'batch') { $result.Rows[0].Status | Should -Be 'Cleared' }
+    }
+
+    # Failure goal: nonzero native exit codes must retain their original handling, even
+    # without stderr. In particular, failed create/delete must prevent dependent actions.
     It 'handles nonzero exit from <Operation> (silent: <Silent>) without false success' -ForEach $failures {
         $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
             FailOperation = $Operation; EmitWarning = -not $Silent; SilentFailure = $Silent
@@ -165,6 +238,7 @@ Describe '<Kind> script (native error preference: <NativeErrors>)' -ForEach $run
         if ($Operation -eq 'delete') { @($result.Calls.Operation) | Should -Not -Contain 'verify' }
     }
 
+    # Only a genuine not-found permits recreation; auth/network failures must never do so.
     It 'does not mistake a failed existence probe for a missing resource: <ErrorText>' -ForEach @(
         @{ ErrorText = 'AuthenticationFailed: token expired' }
         @{ ErrorText = 'AuthorizationFailed: access denied' }
@@ -198,6 +272,9 @@ Describe '<Kind> script (native error preference: <NativeErrors>)' -ForEach $run
         $result.Messages | Should -Match 'SUCCESS:'
     }
 
+    # Parsing goal: relaxing native stderr handling must not relax PowerShell exceptions.
+    # Bad setup JSON must terminate before writes; bad verification JSON cannot undo a
+    # completed delete, but must never produce a cleared result.
     It 'still rejects malformed JSON after a successful <Operation> command' -ForEach @(
         @{ Operation = 'inventory' }
         @{ Operation = 'vcenter' }
@@ -210,6 +287,66 @@ Describe '<Kind> script (native error preference: <NativeErrors>)' -ForEach $run
         @($result.Calls.Operation) | Should -Not -Contain 'delete'
     }
 
+    It 'reports malformed verification JSON after deletion without claiming success' {
+        $result = Invoke-StaleLinkScenario @runParameters -Overrides @{ MalformedOperation = 'verify' }
+        ($result.Calls[-3..-1].Operation -join ',') | Should -Be 'create,delete,verify'
+        $result.Messages | Should -Not -Match 'SUCCESS:'
+        if ($Kind -eq 'batch') {
+            $result.Failure | Should -BeNullOrEmpty
+            $result.ExitCode | Should -Be 1
+            $result.Rows[0].Status | Should -Be 'Error'
+            $result.Rows[0].Detail | Should -Match '(?i)json'
+        } else {
+            $result.Failure.FullyQualifiedErrorId | Should -Match 'ConvertFromJson|ConvertFrom-Json'
+        }
+    }
+
+    # Validation goal: invalid IDs and missing prerequisites must fail before mutation,
+    # even though the fake CLI itself succeeds. Assert the precise reason and safe stop.
+    It 'rejects an invalid vCenter ID before any CLI call' {
+        $result = Invoke-StaleLinkScenario @runParameters -VCenterId '/not-a-vcenter'
+        $result.Failure.Exception.Message | Should -Match 'Invalid vCenter resource ID'
+        $result.Calls.Count | Should -Be 0
+    }
+
+    It 'rejects a vCenter without a custom location before mutation' {
+        $result = Invoke-StaleLinkScenario @runParameters -Overrides @{ CustomLocation = '' }
+        $result.Failure.Exception.Message | Should -Match 'Could not read extendedLocation.name'
+        $result.Calls[-1].Operation | Should -Be 'vcenter'
+        @($result.Calls.Operation) | Should -Not -Contain 'create'
+        @($result.Calls.Operation) | Should -Not -Contain 'delete'
+        $result.Rows.Count | Should -Be 0
+    }
+
+    It 'rejects an unparseable stale machine ID before probing or changing resources' {
+        $result = Invoke-StaleLinkScenario @runParameters -Overrides @{ ManagedResourceId = '/invalid-machine-id' }
+        @($result.Calls.Operation) | Should -Not -Contain 'machine'
+        @($result.Calls.Operation) | Should -Not -Contain 'create'
+        @($result.Calls.Operation) | Should -Not -Contain 'delete'
+        if ($Kind -eq 'batch') {
+            $result.Failure | Should -BeNullOrEmpty
+            $result.ExitCode | Should -Be 1
+            $result.Rows[0].Status | Should -Be 'Error'
+            $result.Rows[0].Detail | Should -Match 'Could not parse subscription/resource group/machine name'
+        } else {
+            $result.Failure.Exception.Message | Should -Match 'Could not parse subscription/resource group/machine name'
+        }
+    }
+
+    # Ownership goal: a foreign machine kind is a safety block, not a CLI exception.
+    # Neither script may recreate or delete a resource owned by another private cloud.
+    It 'blocks a foreign machine kind without creating or deleting' {
+        $result = Invoke-StaleLinkScenario @runParameters -Overrides @{ MachineKind = 'SCVMM' }
+        $result.Failure | Should -BeNullOrEmpty
+        $result.Messages | Should -Match 'InvalidMachineKindInput'
+        $result.Messages | Should -Not -Match 'SUCCESS:'
+        @($result.Calls.Operation) | Should -Not -Contain 'create'
+        @($result.Calls.Operation) | Should -Not -Contain 'delete'
+        @($result.Calls.Operation) | Should -Not -Contain 'verify'
+        if ($Kind -eq 'batch') { $result.Rows[0].Status | Should -Be 'Blocked' }
+    }
+
+    # Consent goal: read-only modes and declined prompts must not cause destructive calls.
     It 'does not create or delete resources in check-only/report-only mode' {
         $result = Invoke-StaleLinkScenario @runParameters -ReadOnly
         $result.Failure | Should -BeNullOrEmpty
@@ -227,19 +364,23 @@ Describe '<Kind> script (native error preference: <NativeErrors>)' -ForEach $run
         else { $result.Messages | Should -Match 'Aborted' }
     }
 
-    It 'does not act after the change confirmation is declined' -Skip:($Kind -ne 'single') {
-        $result = Invoke-StaleLinkScenario @runParameters -Decision 'decline-change'
-        $result.Failure | Should -BeNullOrEmpty
-        @($result.Calls.Operation) | Should -Not -Contain 'create'
-        @($result.Calls.Operation) | Should -Not -Contain 'delete'
-        $result.Messages | Should -Match 'Aborted - no resources'
-    }
+    # Only the single-VM script offers these per-VM decisions. Register the tests there
+    # rather than reporting misleading skips for prompts the batch script never shows.
+    if ($Kind -eq 'single') {
+        It 'does not act after the change confirmation is declined' {
+            $result = Invoke-StaleLinkScenario @runParameters -Decision 'decline-change'
+            $result.Failure | Should -BeNullOrEmpty
+            @($result.Calls.Operation) | Should -Not -Contain 'create'
+            @($result.Calls.Operation) | Should -Not -Contain 'delete'
+            $result.Messages | Should -Match 'Aborted - no resources'
+        }
 
-    It 'does not delete an existing machine when the operator chooses keep' -Skip:($Kind -ne 'single') {
-        $result = Invoke-StaleLinkScenario @runParameters -Decision 'keep'
-        $result.Failure | Should -BeNullOrEmpty
-        @($result.Calls.Operation) | Should -Not -Contain 'delete'
-        $result.Messages | Should -Match 'Keeping the existing Arc VM'
+        It 'does not delete an existing machine when the operator chooses keep' {
+            $result = Invoke-StaleLinkScenario @runParameters -Decision 'keep'
+            $result.Failure | Should -BeNullOrEmpty
+            @($result.Calls.Operation) | Should -Not -Contain 'delete'
+            $result.Messages | Should -Match 'Keeping the existing Arc VM'
+        }
     }
 
     It 'leaves an already empty link untouched' {
@@ -259,6 +400,73 @@ Describe '<Kind> script (native error preference: <NativeErrors>)' -ForEach $run
     }
 
     if ($Kind -eq 'batch') {
+        # Batch success goal: reuse setup reads while processing each VM independently,
+        # and persist one correctly attributed Cleared row per VM in input order.
+        It 'clears every VM in a successful batch with one shared inventory read' {
+            $result = Invoke-StaleLinkScenario @runParameters -Overrides @{ VmNames = @('vm-a', 'vm-b') }
+            $result.Failure | Should -BeNullOrEmpty
+            $result.ExitCode | Should -Be 0
+            @($result.Calls | Where-Object Operation -eq 'inventory').Count | Should -Be 1
+            @($result.Calls | Where-Object Operation -eq 'vcenter').Count | Should -Be 1
+            ($result.Rows.VmName -join ',') | Should -Be 'vm-a,vm-b'
+            ($result.Rows.Status -join ',') | Should -Be 'Cleared,Cleared'
+            foreach ($vm in @('vm-a', 'vm-b')) {
+                $vmCalls = @($result.Calls | Where-Object { $_.Name -eq $vm -and $_.Operation -in @('create', 'delete', 'verify') })
+                ($vmCalls.Operation -join ',') | Should -Be 'create,delete,verify'
+                ($result.Rows | Where-Object VmName -eq $vm).MachineName | Should -Be $vm
+            }
+        }
+
+        # Setup exceptions affect the entire batch: an offline bridge must stop before
+        # inventory or mutation, rather than generate misleading per-VM success rows.
+        It 'stops the batch when the resource bridge is disconnected' {
+            $result = Invoke-StaleLinkScenario @runParameters -Overrides @{ ConnectionStatus = 'Disconnected' }
+            $result.Failure.Exception.Message | Should -Match "connectionStatus 'Disconnected'"
+            ($result.Calls.Operation -join ',') | Should -Be 'account,vcenter'
+            $result.Rows.Count | Should -Be 0
+        }
+
+        # Recovery goal: a per-VM error must preserve the failed VM's status, suppress
+        # unsafe follow-up calls, and still clear the next VM. The overall exit stays 1.
+        It 'continues after <Operation> fails for the first VM' -ForEach @(
+            @{ Operation = 'machine' }
+            @{ Operation = 'kind' }
+            @{ Operation = 'show' }
+            @{ Operation = 'delete' }
+            @{ Operation = 'verify' }
+        ) {
+            $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
+                VmNames = @('vm-a', 'vm-b'); FailOperation = $Operation; FailVm = 'vm-a'
+            }
+            $result.Failure | Should -BeNullOrEmpty
+            $result.ExitCode | Should -Be 1
+            ($result.Rows.VmName -join ',') | Should -Be 'vm-a,vm-b'
+            $expectedStatus = if ($Operation -eq 'verify') { 'Unverified' } else { 'Error' }
+            $result.Rows[0].Status | Should -Be $expectedStatus
+            $result.Rows[1].Status | Should -Be 'Cleared'
+            $firstVmCalls = @($result.Calls | Where-Object { $_.Name -eq 'vm-a' })
+            $firstVmCalls[-1].Operation | Should -Be $Operation
+            $secondVmWrites = @($result.Calls | Where-Object { $_.Name -eq 'vm-b' -and $_.Operation -in @('create', 'delete', 'verify') })
+            ($secondVmWrites.Operation -join ',') | Should -Be 'create,delete,verify'
+        }
+
+        # A PowerShell parsing exception must be isolated just like a native failure.
+        # The first deletion happened, but only the second VM may be reported as cleared.
+        It 'continues after malformed verification JSON for the first VM' {
+            $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
+                VmNames = @('vm-a', 'vm-b'); MalformedOperation = 'verify'; MalformedVm = 'vm-a'
+            }
+            $result.Failure | Should -BeNullOrEmpty
+            $result.ExitCode | Should -Be 1
+            ($result.Rows.VmName -join ',') | Should -Be 'vm-a,vm-b'
+            ($result.Rows.Status -join ',') | Should -Be 'Error,Cleared'
+            $result.Rows[0].Detail | Should -Match '(?i)json'
+            foreach ($vm in @('vm-a', 'vm-b')) {
+                $writes = @($result.Calls | Where-Object { $_.Name -eq $vm -and $_.Operation -in @('create', 'delete', 'verify') })
+                ($writes.Operation -join ',') | Should -Be 'create,delete,verify'
+            }
+        }
+
         It 'continues to the next VM after a create failure, without deleting the failed VM' {
             $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
                 VmNames = @('vm-a', 'vm-b'); FailOperation = 'create'; FailVm = 'vm-a'

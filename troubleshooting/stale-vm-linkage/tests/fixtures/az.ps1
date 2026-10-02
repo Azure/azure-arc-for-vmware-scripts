@@ -38,7 +38,7 @@ if (($operation -eq 'machine' -and -not $config.MachineExists) -or
     [Console]::Error.WriteLine('(ResourceNotFound) simulated missing resource')
     exit 3
 }
-if ($operation -eq $config.MalformedOperation) {
+if ($operation -eq $config.MalformedOperation -and (-not $config.MalformedVm -or $config.MalformedVm -eq $name)) {
     [Console]::Out.WriteLine('{not-json')
     exit 0
 }
@@ -53,7 +53,9 @@ switch ($operation) {
                     name = $vm
                     moRefId = "moref-$vm"
                     kind = 'VirtualMachine'
-                    managedResourceId = if ($config.NoStaleLink) { '' } else {
+                    managedResourceId = if ($config.NoStaleLink) { '' } elseif ($config.ManagedResourceId) {
+                        $config.ManagedResourceId
+                    } else {
                         "/subscriptions/s/resourceGroups/r/providers/Microsoft.HybridCompute/machines/$vm"
                     }
                 }
@@ -62,9 +64,14 @@ switch ($operation) {
         [Console]::Out.WriteLine((ConvertTo-Json -InputObject $items -Compress))
     }
     'vcenter' {
-        [Console]::Out.WriteLine('{"customLocation":"/subscriptions/s/resourceGroups/r/providers/Microsoft.ExtendedLocation/customLocations/c","kind":"VMware","connectionStatus":"Connected","location":"eastus"}')
+        [Console]::Out.WriteLine((@{
+            customLocation = $config.CustomLocation
+            kind = $config.VCenterKind
+            connectionStatus = $config.ConnectionStatus
+            location = 'eastus'
+        } | ConvertTo-Json -Compress))
     }
-    'kind' { [Console]::Out.WriteLine('VMware') }
+    'kind' { [Console]::Out.WriteLine([string]$config.MachineKind) }
     'verify' {
         [Console]::Out.WriteLine($(if ($config.StillLinked) { '["still-linked"]' } else { '[""]' }))
     }
