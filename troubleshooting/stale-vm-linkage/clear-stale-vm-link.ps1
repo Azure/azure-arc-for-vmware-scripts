@@ -9,6 +9,10 @@
     Uses only 'az' CLI commands - no direct REST calls.
     Nothing in VMware vCenter is created, modified or deleted by this script.
 
+.NOTES
+    Run setup-azure-cli.ps1 separately to upgrade Azure CLI and install/update required extensions.
+    This script does not install or upgrade local tooling.
+
 .EXAMPLE
     .\clear-stale-vm-link.ps1 `
         -VCenterId "/subscriptions/0000..../resourceGroups/rg-vcenter/providers/Microsoft.ConnectedVMwarevSphere/vCenters/my-vcenter" `
@@ -112,7 +116,8 @@ Write-Host "=== Step 0: checking Azure CLI ===" -ForegroundColor Cyan
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) { throw "Azure CLI ('az') was not found on PATH." }
 
 # Set the active subscription so the inventory/vCenter lookups target the right place.
-az account set --subscription $VCenterSubscriptionId | Out-Null
+# Scope Continue to each az call so stderr warnings stay visible without bypassing the exit-code check.
+& { $ErrorActionPreference = 'Continue'; az account set --subscription $VCenterSubscriptionId | Out-Null }
 
 # A failure here means the subscription is wrong or the session is not logged in - stop now.
 if ($LASTEXITCODE -ne 0) { throw "Failed to set the active subscription to '$VCenterSubscriptionId'. Check 'az login' and the subscription id." }
@@ -128,11 +133,14 @@ Write-Host "Using subscription: $VCenterSubscriptionId"
 Write-Host "`n=== Step 1: reading the vCenter inventory item for '$VmName' ===" -ForegroundColor Cyan
 
 # List inventory items for the vCenter, filtered server-side to the VM we care about.
-$inventoryJson = az connectedvmware vcenter inventory-item list `
-    --resource-group $VCenterResourceGroup `
-    --vcenter $VCenterName `
-    --subscription $VCenterSubscriptionId `
-    --query "[?moName=='$VmName']" -o json
+$inventoryJson = & {
+    $ErrorActionPreference = 'Continue'
+    az connectedvmware vcenter inventory-item list `
+        --resource-group $VCenterResourceGroup `
+        --vcenter $VCenterName `
+        --subscription $VCenterSubscriptionId `
+        --query "[?moName=='$VmName']" -o json
+}
 
 # A failed list tells us nothing about the inventory - do not treat it as "no items found".
 if ($LASTEXITCODE -ne 0) { throw "Failed to list inventory items for vCenter '$VCenterName' in rg '$VCenterResourceGroup'." }
@@ -228,7 +236,7 @@ Write-Host "HCRP machine exists: $machineExists"
 # The 'kind' on an existing machine decides whether a VM instance can be created under it.
 $machineKind = $null
 if ($machineExists) {
-    $machineKind = az connectedmachine show --ids $machineId --query "kind" -o tsv
+    $machineKind = & { $ErrorActionPreference = 'Continue'; az connectedmachine show --ids $machineId --query "kind" -o tsv }
 
     # Without the kind we cannot tell whether the recreate in step 2.2 would be rejected.
     if ($LASTEXITCODE -ne 0) { throw "Failed to read the 'kind' property of HCRP machine '$machineName'." }
@@ -243,11 +251,14 @@ if ($machineExists) {
 
 # 'az connectedvmware vm create' picks this up automatically, but we read it to fail early if it is missing.
 # The vCenter 'kind' is read too: the service validates the machine kind against this exact value.
-$vCenterJson = az connectedvmware vcenter show `
-    --name $VCenterName `
-    --resource-group $VCenterResourceGroup `
-    --subscription $VCenterSubscriptionId `
-    --query "{customLocation:extendedLocation.name, kind:kind}" -o json
+$vCenterJson = & {
+    $ErrorActionPreference = 'Continue'
+    az connectedvmware vcenter show `
+        --name $VCenterName `
+        --resource-group $VCenterResourceGroup `
+        --subscription $VCenterSubscriptionId `
+        --query "{customLocation:extendedLocation.name, kind:kind}" -o json
+}
 
 # Distinguish "could not read the vCenter" from "the vCenter has no custom location".
 if ($LASTEXITCODE -ne 0) { throw "Failed to read vCenter '$VCenterName' in rg '$VCenterResourceGroup'." }
@@ -371,7 +382,7 @@ if (-not $vmInstanceExists) {
     )
 
     # Run the create - this is the CLI equivalent of the two REST PUTs in the TSG.
-    az connectedvmware vm create @createArgs -o none
+    & { $ErrorActionPreference = 'Continue'; az connectedvmware vm create @createArgs -o none }
 
     # Without the recreated Arc VM resources the delete cannot clear the link - stop rather than delete blindly.
     if ($LASTEXITCODE -ne 0) { throw "Failed to recreate Arc resources for vCenter VM '$VmName' as machine '$machineName' in rg '$machineResourceGroup'." }
@@ -410,11 +421,14 @@ if ($machineExists) {
 }
 
 # Delete the Arc-side resources using the names from the stale link; --yes skips the CLI confirmation prompt.
-az connectedvmware vm delete `
-    --resource-group $machineResourceGroup `
-    --name $machineName `
-    --subscription $machineSubscriptionId `
-    --yes -o none
+& {
+    $ErrorActionPreference = 'Continue'
+    az connectedvmware vm delete `
+        --resource-group $machineResourceGroup `
+        --name $machineName `
+        --subscription $machineSubscriptionId `
+        --yes -o none
+}
 
 # A failed delete means the link was not cleared - stop instead of reporting a misleading result.
 if ($LASTEXITCODE -ne 0) { throw "Failed to delete the Arc VM '$machineName' in rg '$machineResourceGroup'." }
@@ -430,11 +444,14 @@ Write-Host "Delete completed."
 Write-Host "`n=== Step 4: verifying the inventory item ===" -ForegroundColor Cyan
 
 # Re-run the same query as step 1.1 to read the current value of the pointer.
-$verifyJson = az connectedvmware vcenter inventory-item list `
-    --resource-group $VCenterResourceGroup `
-    --vcenter $VCenterName `
-    --subscription $VCenterSubscriptionId `
-    --query "[?moName=='$VmName'].managedResourceId" -o json
+$verifyJson = & {
+    $ErrorActionPreference = 'Continue'
+    az connectedvmware vcenter inventory-item list `
+        --resource-group $VCenterResourceGroup `
+        --vcenter $VCenterName `
+        --subscription $VCenterSubscriptionId `
+        --query "[?moName=='$VmName'].managedResourceId" -o json
+}
 
 # If the verification read fails we cannot claim success - stop with a clear message.
 if ($LASTEXITCODE -ne 0) { throw "Delete completed, but verifying the inventory item for '$VmName' failed. Re-check the inventory item manually." }
