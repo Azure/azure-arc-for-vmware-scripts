@@ -2,7 +2,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 <#
 .SYNOPSIS
-    Offline regression tests for both stale-link scripts on Windows.
+    Offline regression tests for CLI setup and both stale-link scripts on Windows.
 .DESCRIPTION
     Goal: allow harmless native warnings without weakening the scripts' safety gates.
     Successful flows must target the linked Azure resources, recreate only what is
@@ -35,6 +35,9 @@ BeforeDiscovery {
             }
         }
     )
+    $setupRuns = @($runs | Where-Object Kind -eq 'single' | ForEach-Object {
+        @{ Kind = 'setup'; NativeErrors = $_.NativeErrors }
+    })
 }
 
 BeforeAll {
@@ -65,11 +68,15 @@ BeforeAll {
         foreach ($key in $Overrides.Keys) { $config[$key] = $Overrides[$key] }
         $config | ConvertTo-Json | Set-Content -LiteralPath $configPath -Encoding UTF8
 
-        $fileName = if ($Kind -eq 'batch') { 'clear-stale-vm-link-batch.ps1' } else { 'clear-stale-vm-link.ps1' }
+        $fileName = if ($Kind -eq 'setup') { 'setup-azure-cli.ps1' }
+                    elseif ($Kind -eq 'batch') { 'clear-stale-vm-link-batch.ps1' }
+                    else { 'clear-stale-vm-link.ps1' }
         $file = Join-Path (Split-Path $testsRoot -Parent) $fileName
         $fixture = Join-Path $testsRoot 'fixtures\az.cmd'
         $parameters = @{ VCenterId = $VCenterId }
-        if ($Kind -eq 'batch') {
+        if ($Kind -eq 'setup') {
+            $parameters = @{}
+        } elseif ($Kind -eq 'batch') {
             $parameters.VmNames = $config.VmNames
             $parameters.Delete = -not $ReadOnly
             $parameters.ReportPath = $reportPath
@@ -159,6 +166,25 @@ Describe '<Kind> script (native error preference: <NativeErrors>)' -ForEach $run
         $result.Messages | Should -Match 'SUCCESS:'
     }
 
+    # Separation goal: VM troubleshooting must never perform local setup, even in write
+    # mode. The operator runs setup-azure-cli.ps1 separately when tooling needs attention.
+    It 'never installs or upgrades tooling (read-only: <ReadOnly>)' -ForEach @(
+        @{ ReadOnly = $false }
+        @{ ReadOnly = $true }
+    ) {
+        $result = Invoke-StaleLinkScenario @runParameters -ReadOnly:$ReadOnly
+        $result.Failure | Should -BeNullOrEmpty
+        $result.Calls[0].Operation | Should -Be 'account'
+        @($result.Calls | Where-Object { $_.Operation -eq 'upgrade' -or $_.Operation -like 'extension-*' }).Count | Should -Be 0
+        if ($ReadOnly) {
+            @($result.Calls.Operation) | Should -Not -Contain 'create'
+            @($result.Calls.Operation) | Should -Not -Contain 'delete'
+        } else {
+            $result.ExitCode | Should -Be 0
+            $result.Messages | Should -Match 'SUCCESS:'
+        }
+    }
+
     # Lifecycle goal: validate the entire command sequence, not just a success message.
     # Exact argument checks ensure recreation/deletion use the stale ID and inventory item,
     # and that an existing instance is never unnecessarily recreated.
@@ -170,9 +196,8 @@ Describe '<Kind> script (native error preference: <NativeErrors>)' -ForEach $run
         $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
             MachineExists = $MachineExists; InstanceExists = $InstanceExists; EmitWarning = $false
         }
-        $expected = @('extension-list', 'extension-help', 'extension-help')
-        $expected += if ($Kind -eq 'batch') { @('account', 'vcenter', 'inventory', 'machine') }
-                     else { @('account', 'inventory', 'machine') }
+        $expected = if ($Kind -eq 'batch') { @('account', 'vcenter', 'inventory', 'machine') }
+                    else { @('account', 'inventory', 'machine') }
         if ($MachineExists) { $expected += 'kind' }
         if ($Kind -eq 'single') { $expected += 'vcenter' }
         if ($MachineExists) { $expected += 'show' }
@@ -201,27 +226,20 @@ Describe '<Kind> script (native error preference: <NativeErrors>)' -ForEach $run
         }
     }
 
-    # Regression goal: a missing connectedmachine extension is installed before Azure reads.
-    # The existing connectedvmware extension is updated, then both required commands
-    # must load successfully before account selection or any resource operation.
     # The linked machine deliberately lives outside the vCenter subscription/resource group;
     # both reads and writes must use that stale ID, not the active vCenter subscription.
-    It 'repairs a missing connectedmachine extension early (machine exists: <MachineExists>)' -ForEach @(
+    It 'uses the linked machine subscription and resource group (machine exists: <MachineExists>)' -ForEach @(
         @{ MachineExists = $true }
         @{ MachineExists = $false }
     ) {
         $machineId = '/subscriptions/machine-sub/resourceGroups/machine-rg/providers/Microsoft.HybridCompute/machines/vm-a'
         $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
-            InstalledExtensions = @('connectedvmware', 'scvmm'); MachineExists = $MachineExists
+            MachineExists = $MachineExists
             ManagedResourceId = $machineId
         }
         $result.Failure | Should -BeNullOrEmpty
         $result.ExitCode | Should -Be 0
         $result.Messages | Should -Match 'SUCCESS: managedResourceId is now empty'
-        $accountIndex = [Array]::IndexOf(@($result.Calls.Operation), 'account')
-        ($result.Calls[0..($accountIndex - 1)].Operation -join ',') | Should -Be 'extension-list,extension-help,extension-update,extension-add,extension-help,extension-help'
-        $repairs = @($result.Calls | Where-Object { $_.Operation -in @('extension-add', 'extension-update') })
-        ($repairs.Name -join ',') | Should -Be 'connectedvmware,connectedmachine'
         $machineRead = @($result.Calls | Where-Object Operation -eq 'machine')
         $machineRead.Count | Should -Be 1
         ($machineRead[0].Arguments -join '|') | Should -Be "connectedmachine|show|--ids|$machineId|-o|none"
@@ -267,124 +285,6 @@ Describe '<Kind> script (native error preference: <NativeErrors>)' -ForEach $run
             $result.ExitCode | Should -Be 2
             $result.Failure.Exception.Message | Should -Match 'exit code 2'
             $result.Failure.Exception.Message | Should -Match ([regex]::Escape($errorText))
-        }
-    }
-
-    # Preflight goal: distinguish missing extensions from installed but unloadable commands.
-    # Repair only required extensions, leave scvmm untouched, and verify availability before
-    # starting Azure reads. All extension operations here are native-fixture simulations.
-    It 'repairs CLI extensions before resource reads: <Scenario>' -ForEach @(
-        @{
-            Scenario = 'missing connectedvmware'
-            Installed = @('connectedmachine', 'scvmm'); Unavailable = @()
-            ExpectedRepairs = 'extension-add:connectedvmware,extension-update:connectedmachine'
-        }
-        @{
-            Scenario = 'both required extensions absent'
-            Installed = @(); Unavailable = @()
-            ExpectedRepairs = 'extension-add:connectedvmware,extension-add:connectedmachine'
-        }
-        @{
-            Scenario = 'connectedvmware installed but unrecognized'
-            Installed = @('connectedvmware', 'connectedmachine', 'scvmm'); Unavailable = @('connectedvmware')
-            ExpectedRepairs = 'extension-update:connectedvmware,extension-update:connectedmachine'
-        }
-        @{
-            Scenario = 'connectedmachine installed but unrecognized'
-            Installed = @('connectedvmware', 'connectedmachine', 'scvmm'); Unavailable = @('connectedmachine')
-            ExpectedRepairs = 'extension-update:connectedvmware,extension-update:connectedmachine'
-        }
-        @{
-            Scenario = 'connectedmachine and unrelated scvmm absent'
-            Installed = @('connectedvmware'); Unavailable = @()
-            ExpectedRepairs = 'extension-update:connectedvmware,extension-add:connectedmachine'
-        }
-    ) {
-        $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
-            InstalledExtensions = $Installed; UnavailableExtensions = $Unavailable
-        }
-        $result.Failure | Should -BeNullOrEmpty
-        $result.ExitCode | Should -Be 0
-        $result.Messages | Should -Match 'SUCCESS:'
-        $repairs = @($result.Calls | Where-Object { $_.Operation -in @('extension-add', 'extension-update') })
-        (($repairs | ForEach-Object { "$($_.Operation):$($_.Name)" }) -join ',') | Should -Be $ExpectedRepairs
-        @($repairs.Name) | Should -Not -Contain 'scvmm'
-        foreach ($call in $repairs) {
-            ($call.Arguments -join '|') | Should -Be "extension|$($call.Operation -replace '^extension-')|--name|$($call.Name)|-o|none"
-        }
-        $accountIndex = [Array]::IndexOf(@($result.Calls.Operation), 'account')
-        ($result.Calls[($accountIndex - 2)..($accountIndex - 1)].Operation -join ',') | Should -Be 'extension-help,extension-help'
-        ($result.Calls[($accountIndex - 2)..($accountIndex - 1)].Name -join ',') | Should -Be 'connectedvmware,connectedmachine'
-        @($result.Calls[$accountIndex..($result.Calls.Count - 1)] | Where-Object Operation -like 'extension-*').Count | Should -Be 0
-    }
-
-    # Read-only refers to Azure resources, not local CLI maintenance. Repair must still
-    # work in inspection mode without accidentally reaching VM create or delete.
-    It 'repairs missing CLI extensions in read-only mode without Azure writes' {
-        $result = Invoke-StaleLinkScenario @runParameters -ReadOnly -Overrides @{ InstalledExtensions = @() }
-        $result.Failure | Should -BeNullOrEmpty
-        # Inspection returns after the expected missing-instance probe, retaining its
-        # native exit code 3; this is not a thrown error or a failed extension repair.
-        $result.ExitCode | Should -Be 3
-        (@($result.Calls | Where-Object Operation -eq 'extension-add').Name -join ',') | Should -Be 'connectedvmware,connectedmachine'
-        @($result.Calls.Operation) | Should -Not -Contain 'extension-update'
-        @($result.Calls.Operation) | Should -Not -Contain 'create'
-        @($result.Calls.Operation) | Should -Not -Contain 'delete'
-        if ($Kind -eq 'batch') { $result.Rows[0].Status | Should -Be 'WouldClear' }
-    }
-
-    # Installation failures are setup failures, not missing Azure resources. Stop before
-    # subscription selection and include the failed repair command so the operator can act.
-    It 'stops early when CLI extension repair fails: <Extension>' -ForEach @(
-        @{ Extension = 'connectedvmware'; Operation = 'extension-update'; Action = 'update' }
-        @{ Extension = 'connectedmachine'; Operation = 'extension-add'; Action = 'add' }
-    ) {
-        $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
-            InstalledExtensions = @('connectedvmware', 'scvmm')
-            FailOperation = $Operation; FailVm = $Extension
-        }
-        $result.Failure.Exception.Message | Should -Match "Failed to $Action Azure CLI extension '$Extension'"
-        $result.Failure.Exception.Message | Should -Match "az extension $Action --name $Extension"
-        $result.ExitCode | Should -Be 7
-        $result.Calls[-1].Operation | Should -Be $Operation
-        $result.Calls[-1].Name | Should -Be $Extension
-        @($result.Calls | Where-Object Operation -notlike 'extension-*').Count | Should -Be 0
-        $result.Rows.Count | Should -Be 0
-    }
-
-    # An installer can return success without fixing an incompatible/broken command.
-    # Verify the commands again and stop rather than looping or failing later on a VM.
-    It 'stops when CLI extension repair leaves <Extension> unavailable' -ForEach @(
-        @{ Extension = 'connectedvmware' }
-        @{ Extension = 'connectedmachine' }
-    ) {
-        $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
-            UnavailableExtensions = @($Extension); RepairIneffective = $true
-        }
-        $result.Failure.Exception.Message | Should -Match 'still unavailable after extension repair'
-        $result.Failure.Exception.Message | Should -Match $Extension
-        $result.ExitCode | Should -Be 2
-        $result.Calls[-1].Operation | Should -Be 'extension-help'
-        $result.Calls[-1].Name | Should -Be $Extension
-        @($result.Calls | Where-Object Operation -eq 'extension-update').Count | Should -Be 2
-        @($result.Calls | Where-Object Operation -notlike 'extension-*').Count | Should -Be 0
-        $result.Rows.Count | Should -Be 0
-    }
-
-    # Do not infer "nothing installed" from a failed or unreadable extension list.
-    # Neither case may trigger installation or proceed to Azure resources.
-    It 'rejects an unusable CLI extension list: <Scenario>' -ForEach @(
-        @{ Scenario = 'native failure'; Overrides = @{ FailOperation = 'extension-list' } }
-        @{ Scenario = 'malformed JSON'; Overrides = @{ MalformedOperation = 'extension-list' } }
-    ) {
-        $result = Invoke-StaleLinkScenario @runParameters -Overrides $Overrides
-        $result.Failure | Should -Not -BeNullOrEmpty
-        $result.Calls.Count | Should -Be 1
-        $result.Calls[0].Operation | Should -Be 'extension-list'
-        if ($Scenario -eq 'native failure') {
-            $result.Failure.Exception.Message | Should -Match 'Failed to list installed Azure CLI extensions'
-        } else {
-            $result.Failure.FullyQualifiedErrorId | Should -Match 'ConvertFromJson|ConvertFrom-Json'
         }
     }
 
@@ -613,7 +513,7 @@ Describe '<Kind> script (native error preference: <NativeErrors>)' -ForEach $run
         It 'stops the batch when the resource bridge is disconnected' {
             $result = Invoke-StaleLinkScenario @runParameters -Overrides @{ ConnectionStatus = 'Disconnected' }
             $result.Failure.Exception.Message | Should -Match "connectionStatus 'Disconnected'"
-            ($result.Calls.Operation -join ',') | Should -Be 'extension-list,extension-help,extension-help,account,vcenter'
+            ($result.Calls.Operation -join ',') | Should -Be 'account,vcenter'
             $result.Rows.Count | Should -Be 0
         }
 
@@ -669,6 +569,143 @@ Describe '<Kind> script (native error preference: <NativeErrors>)' -ForEach $run
             $result.Rows[1].Status | Should -Be 'Cleared'
             @($result.Calls | Where-Object { $_.Operation -eq 'delete' -and $_.Name -eq 'vm-a' }).Count | Should -Be 0
             @($result.Calls | Where-Object { $_.Operation -eq 'delete' -and $_.Name -eq 'vm-b' }).Count | Should -Be 1
+        }
+    }
+}
+
+Describe 'Standalone CLI setup (native error preference: <NativeErrors>)' -ForEach $setupRuns -Skip:($env:OS -ne 'Windows_NT') {
+    BeforeAll {
+        $runParameters = @{ Kind = 'setup'; NativeErrors = $NativeErrors }
+    }
+
+    # Setup owns local tooling only: upgrade the CLI, add/update just the two required
+    # extensions, and verify commands load. Exact sequences also exclude Azure operations.
+    It 'installs or updates required extensions without touching scvmm: <Scenario>' -ForEach @(
+        @{
+            Scenario = 'all extensions already installed'
+            Installed = @('connectedvmware', 'connectedmachine', 'scvmm'); Unavailable = @()
+            ExpectedRepairs = 'extension-update:connectedvmware,extension-update:connectedmachine'
+        }
+        @{
+            Scenario = 'missing connectedvmware'
+            Installed = @('connectedmachine', 'scvmm'); Unavailable = @()
+            ExpectedRepairs = 'extension-add:connectedvmware,extension-update:connectedmachine'
+        }
+        @{
+            Scenario = 'both required extensions absent'
+            Installed = @(); Unavailable = @()
+            ExpectedRepairs = 'extension-add:connectedvmware,extension-add:connectedmachine'
+        }
+        @{
+            Scenario = 'missing connectedmachine'
+            Installed = @('connectedvmware', 'scvmm'); Unavailable = @()
+            ExpectedRepairs = 'extension-update:connectedvmware,extension-add:connectedmachine'
+        }
+        @{
+            Scenario = 'connectedvmware installed but unrecognized'
+            Installed = @('connectedvmware', 'connectedmachine', 'scvmm'); Unavailable = @('connectedvmware')
+            ExpectedRepairs = 'extension-update:connectedvmware,extension-update:connectedmachine'
+        }
+        @{
+            Scenario = 'connectedmachine installed but unrecognized'
+            Installed = @('connectedvmware', 'connectedmachine', 'scvmm'); Unavailable = @('connectedmachine')
+            ExpectedRepairs = 'extension-update:connectedvmware,extension-update:connectedmachine'
+        }
+    ) {
+        $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
+            InstalledExtensions = $Installed; UnavailableExtensions = $Unavailable
+        }
+        $result.Failure | Should -BeNullOrEmpty
+        $result.ExitCode | Should -Be 0
+        $result.Preference | Should -Be 'Stop'
+        $result.Diagnostics | Should -Match 'SyntaxWarning'
+        $result.Messages | Should -Match 'Azure CLI setup completed'
+        $result.Rows.Count | Should -Be 0
+        ($result.Calls[0].Arguments -join '|') | Should -Be 'upgrade|--yes|--all|false'
+        $repairs = @($result.Calls | Where-Object { $_.Operation -in @('extension-add', 'extension-update') })
+        (($repairs | ForEach-Object { "$($_.Operation):$($_.Name)" }) -join ',') | Should -Be $ExpectedRepairs
+        @($repairs.Name) | Should -Not -Contain 'scvmm'
+        foreach ($call in $repairs) {
+            ($call.Arguments -join '|') | Should -Be "extension|$($call.Operation -replace '^extension-')|--name|$($call.Name)|-o|none"
+        }
+        ($result.Calls.Operation -join ',') | Should -Be ("upgrade,extension-list," + ($repairs.Operation -join ',') + ',extension-help,extension-help')
+        ($result.Calls[-2].Arguments -join '|') | Should -Be 'connectedvmware|vm|show|--help'
+        ($result.Calls[-1].Arguments -join '|') | Should -Be 'connectedmachine|show|--help'
+    }
+
+    It 'also completes setup without stderr warnings' {
+        $result = Invoke-StaleLinkScenario @runParameters -Overrides @{ EmitWarning = $false }
+        $result.Failure | Should -BeNullOrEmpty
+        $result.ExitCode | Should -Be 0
+        $result.Diagnostics | Should -BeNullOrEmpty
+        $result.Messages | Should -Match 'Azure CLI setup completed'
+    }
+
+    # Upgrade failure must preserve the exit code and stop before extension changes.
+    It 'stops immediately when Azure CLI upgrade fails (silent: <Silent>)' -ForEach @(
+        @{ Silent = $false }
+        @{ Silent = $true }
+    ) {
+        $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
+            FailOperation = 'upgrade'; SilentFailure = $Silent; EmitWarning = -not $Silent
+        }
+        $result.Failure.Exception.Message | Should -Match 'Failed to upgrade Azure CLI'
+        $result.Failure.Exception.Message | Should -Match 'az upgrade --yes --all false'
+        $result.ExitCode | Should -Be 7
+        ($result.Calls.Operation -join ',') | Should -Be 'upgrade'
+        $result.Messages | Should -Not -Match 'setup completed'
+    }
+
+    # Both installation and update failures must stop before verification or completion.
+    It 'stops when extension <Action> fails for <Extension>' -ForEach @(
+        @{ Extension = 'connectedvmware'; Action = 'add'; Installed = @() }
+        @{ Extension = 'connectedmachine'; Action = 'add'; Installed = @() }
+        @{ Extension = 'connectedvmware'; Action = 'update'; Installed = @('connectedvmware', 'connectedmachine') }
+        @{ Extension = 'connectedmachine'; Action = 'update'; Installed = @('connectedvmware', 'connectedmachine') }
+    ) {
+        $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
+            InstalledExtensions = $Installed; FailOperation = "extension-$Action"; FailVm = $Extension
+        }
+        $result.Failure.Exception.Message | Should -Match "Failed to $Action Azure CLI extension '$Extension'"
+        $result.Failure.Exception.Message | Should -Match "az extension $Action --name $Extension"
+        $result.ExitCode | Should -Be 7
+        $result.Calls[-1].Operation | Should -Be "extension-$Action"
+        $result.Calls[-1].Name | Should -Be $Extension
+        @($result.Calls.Operation) | Should -Not -Contain 'extension-help'
+        (@($result.Calls | Where-Object Operation -notlike 'extension-*').Operation -join ',') | Should -Be 'upgrade'
+        $result.Messages | Should -Not -Match 'setup completed'
+    }
+
+    # An installer may return success without fixing an incompatible command.
+    # Command verification must catch this rather than reporting false readiness.
+    It 'stops when setup leaves <Extension> unavailable' -ForEach @(
+        @{ Extension = 'connectedvmware' }
+        @{ Extension = 'connectedmachine' }
+    ) {
+        $result = Invoke-StaleLinkScenario @runParameters -Overrides @{
+            UnavailableExtensions = @($Extension); RepairIneffective = $true
+        }
+        $result.Failure.Exception.Message | Should -Match 'still unavailable after extension setup'
+        $result.Failure.Exception.Message | Should -Match $Extension
+        $result.ExitCode | Should -Be 2
+        $result.Calls[-1].Operation | Should -Be 'extension-help'
+        $result.Calls[-1].Name | Should -Be $Extension
+        @($result.Calls | Where-Object Operation -eq 'extension-update').Count | Should -Be 2
+        $result.Messages | Should -Not -Match 'setup completed'
+    }
+
+    # A failed or unreadable extension list is not an empty installation.
+    It 'rejects an unusable CLI extension list: <Scenario>' -ForEach @(
+        @{ Scenario = 'native failure'; Overrides = @{ FailOperation = 'extension-list' } }
+        @{ Scenario = 'malformed JSON'; Overrides = @{ MalformedOperation = 'extension-list' } }
+    ) {
+        $result = Invoke-StaleLinkScenario @runParameters -Overrides $Overrides
+        $result.Failure | Should -Not -BeNullOrEmpty
+        ($result.Calls.Operation -join ',') | Should -Be 'upgrade,extension-list'
+        if ($Scenario -eq 'native failure') {
+            $result.Failure.Exception.Message | Should -Match 'Failed to list installed Azure CLI extensions'
+        } else {
+            $result.Failure.FullyQualifiedErrorId | Should -Match 'ConvertFromJson|ConvertFrom-Json'
         }
     }
 }

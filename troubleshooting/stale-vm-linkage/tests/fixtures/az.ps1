@@ -6,7 +6,9 @@ $queryIndex = [Array]::IndexOf($args, '--query')
 $query = if ($queryIndex -ge 0) { $args[$queryIndex + 1] } else { '' }
 $nameIndex = [Array]::IndexOf($args, '--name')
 $name = if ($nameIndex -ge 0) { $args[$nameIndex + 1] } else { 'vm-a' }
-if ($args[0] -eq 'extension' -and $args[1] -in @('list', 'add', 'update')) {
+if ($args[0] -eq 'upgrade') {
+    $operation = 'upgrade'
+} elseif ($args[0] -eq 'extension' -and $args[1] -in @('list', 'add', 'update')) {
     $operation = "extension-$($args[1])"
 } elseif ('--help' -in $args -and $args[0] -in @('connectedvmware', 'connectedmachine')) {
     $operation = 'extension-help'
