@@ -471,7 +471,11 @@ foreach ($vmName in $vmNameList) {
             if ($LASTEXITCODE -ne 0) { throw "Failed to recreate Arc resources from vCenter VM '$vmName' as machine '$machineName' in rg '$machineResourceGroup'." }
 
             # Confirm the chain is now whole so the delete has something to tear down.
-            Write-Host "[$vmName] Step 2.6: Arc machine and virtualMachineInstance recreated from the vCenter VM." -ForegroundColor Yellow
+            if ($machineExists) {
+                Write-Host "[$vmName] Step 2.6: existing Arc machine reused and virtualMachineInstance created from the vCenter VM." -ForegroundColor Yellow
+            } else {
+                Write-Host "[$vmName] Step 2.6: Arc machine and virtualMachineInstance created from the vCenter VM." -ForegroundColor Yellow
+            }
         } else {
             Write-Host "[$vmName] Step 2.6: Arc VM resources for machine '$machineName' already exist in rg '$machineResourceGroup' (sub $machineSubscriptionId)." -ForegroundColor Yellow
         }
@@ -555,24 +559,6 @@ if ($ReportPath) {
 if (-not $Delete) {
     Write-Host "`nREPORT ONLY - no resources were created or deleted. Re-run with -Delete to clear the links above." -ForegroundColor Yellow
     Write-Host "Because -Delete was not supplied, no Arc VM resources were recreated and no offboarding action is required." -ForegroundColor Yellow
-
-    foreach ($result in @($results | Where-Object { $_.Status -eq "WouldClear" })) {
-        $targetMatch = [regex]::Match(
-            $result.StaleLink,
-            '(?i)^/subscriptions/([^/]+)/resourceGroups/([^/]+)/providers/Microsoft\.HybridCompute/machines/([^/]+)'
-        )
-
-        if ($targetMatch.Success) {
-            $targetSubscriptionId = $targetMatch.Groups[1].Value
-            $targetResourceGroup = $targetMatch.Groups[2].Value
-            $targetMachineName = $targetMatch.Groups[3].Value
-
-            Write-Host "`n[$($result.VmName)] Arc resources would be recreated in subscription '$targetSubscriptionId', resource group '$targetResourceGroup', with name '$targetMachineName'." -ForegroundColor Yellow
-            Write-Host "If resources are recreated there and that is not where you want the VM onboarded, offboard it in the Azure portal or run:" -ForegroundColor Yellow
-            Write-Host "NOTE: This delete operation removes only the Azure resource for the VM. It does not delete the actual on-premises VM." -ForegroundColor Yellow
-            Write-Host "  az connectedvmware vm delete --resource-group `"$targetResourceGroup`" --name `"$targetMachineName`" --subscription `"$targetSubscriptionId`" --yes" -ForegroundColor Yellow
-        }
-    }
 }
 
 # A non-zero exit code lets a caller detect that some VMs need attention.

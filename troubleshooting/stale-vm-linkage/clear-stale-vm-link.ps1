@@ -377,7 +377,11 @@ if (-not $vmInstanceExists) {
     if ($LASTEXITCODE -ne 0) { throw "Failed to recreate Arc resources for vCenter VM '$VmName' as machine '$machineName' in rg '$machineResourceGroup'." }
 
     # Confirm the chain is now whole so the delete has something to tear down.
-    Write-Host "Arc machine and virtualMachineInstance recreated from vCenter VM '$VmName'."
+    if ($machineExists) {
+        Write-Host "Existing Arc machine reused and virtualMachineInstance created from vCenter VM '$VmName'."
+    } else {
+        Write-Host "Arc machine and virtualMachineInstance created from vCenter VM '$VmName'."
+    }
 } else {
     Write-Host "Arc VM resources already exist for machine '$machineName' in rg '$machineResourceGroup'." -ForegroundColor Green
 }
@@ -399,9 +403,6 @@ if ($machineExists) {
     if ($deleteConfirmation -cne "delete") {
         Write-Host "Keeping the existing Arc VM. The stale link was not cleared." -ForegroundColor Yellow
         Write-Host "The Arc VM resource remains in subscription '$machineSubscriptionId', resource group '$machineResourceGroup', with name '$machineName'." -ForegroundColor Yellow
-        Write-Host "If this is not the subscription or resource group where you want the VM onboarded, offboard it in the Azure portal or run:" -ForegroundColor Yellow
-        Write-Host "NOTE: This delete operation removes only the Azure resource for the VM. It does not delete the actual on-premises VM." -ForegroundColor Yellow
-        Write-Host "  az connectedvmware vm delete --resource-group `"$machineResourceGroup`" --name `"$machineName`" --subscription `"$machineSubscriptionId`" --yes" -ForegroundColor Yellow
         return
     }
 } else {
