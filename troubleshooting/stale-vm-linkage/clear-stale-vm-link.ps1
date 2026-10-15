@@ -30,6 +30,30 @@ param(
 # Stop the script on the first unhandled error so we never continue on bad data.
 $ErrorActionPreference = "Stop"
 
+# Run 'az' so that harmless stderr output cannot abort the script; the exit code decides success.
+# Reason: under $ErrorActionPreference = 'Stop', Windows PowerShell turns any native-command stderr line
+# into a terminating NativeCommandError. The Azure CLI writes warnings to stderr even on success (for
+# example the Python "SyntaxWarning: invalid escape sequence" from the connectedvmware extension).
+# Stdout is returned to the caller, stderr is shown only when the command fails, and $LASTEXITCODE is kept.
+function Invoke-Az {
+    # Capture the arguments first: inside the nested script block '$args' would be that block's own (empty) list.
+    $azArgs = $args
+    $azOutput = & { $ErrorActionPreference = 'Continue'; & az @azArgs 2>&1 }
+    $azExitCode = $LASTEXITCODE
+
+    $azStdErr = @($azOutput | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] })
+    $azStdOut = @($azOutput | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
+
+    if ($azExitCode -ne 0 -and $azStdErr.Count -gt 0) {
+        Write-Host ($azStdErr | Out-String).Trim() -ForegroundColor Red
+    } elseif ($azStdErr.Count -gt 0) {
+        Write-Verbose "az succeeded (exit code 0); ignoring stderr output: $($azStdErr | Out-String)"
+    }
+
+    $global:LASTEXITCODE = $azExitCode
+    $azStdOut
+}
+
 # ---------------------------------------------------------------------------
 # Prerequisite. The Arc resource bridge must be running before anything else.
 # ---------------------------------------------------------------------------
@@ -111,8 +135,14 @@ Write-Host "=== Step 0: checking Azure CLI ===" -ForegroundColor Cyan
 # Fail early with a clear message if the az CLI is not installed or not on PATH.
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) { throw "Azure CLI ('az') was not found on PATH." }
 
+# The script calls 'az connectedvmware' and 'az connectedmachine'; a missing extension otherwise shows up later as a confusing "not recognized" error.
+foreach ($requiredExtension in @("connectedvmware", "connectedmachine")) {
+    Invoke-Az extension show --name $requiredExtension -o none | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "The Azure CLI extension '$requiredExtension' is not installed. Run: az extension add --name $requiredExtension --upgrade" }
+}
+
 # Set the active subscription so the inventory/vCenter lookups target the right place.
-az account set --subscription $VCenterSubscriptionId | Out-Null
+Invoke-Az account set --subscription $VCenterSubscriptionId | Out-Null
 
 # A failure here means the subscription is wrong or the session is not logged in - stop now.
 if ($LASTEXITCODE -ne 0) { throw "Failed to set the active subscription to '$VCenterSubscriptionId'. Check 'az login' and the subscription id." }
@@ -128,7 +158,7 @@ Write-Host "Using subscription: $VCenterSubscriptionId"
 Write-Host "`n=== Step 1: reading the vCenter inventory item for '$VmName' ===" -ForegroundColor Cyan
 
 # List inventory items for the vCenter, filtered server-side to the VM we care about.
-$inventoryJson = az connectedvmware vcenter inventory-item list `
+$inventoryJson = Invoke-Az connectedvmware vcenter inventory-item list `
     --resource-group $VCenterResourceGroup `
     --vcenter $VCenterName `
     --subscription $VCenterSubscriptionId `
@@ -227,14 +257,20 @@ Write-Host "HCRP machine exists: $machineExists"
 
 # The 'kind' on an existing machine decides whether a VM instance can be created under it.
 $machineKind = $null
+$machineLocation = $null
 if ($machineExists) {
-    $machineKind = az connectedmachine show --ids $machineId --query "kind" -o tsv
+    $machineKind = Invoke-Az connectedmachine show --ids $machineId --query "kind" -o tsv
 
     # Without the kind we cannot tell whether the recreate in step 2.2 would be rejected.
     if ($LASTEXITCODE -ne 0) { throw "Failed to read the 'kind' property of HCRP machine '$machineName'." }
 
     # Show it - an empty or foreign kind is the usual reason 'vm create' fails with a 400.
     Write-Host "HCRP machine kind  : '$machineKind'"
+
+    # 'vm create' defaults the location to the vCenter's, and an existing machine's location cannot be changed.
+    $machineLocation = Invoke-Az connectedmachine show --ids $machineId --query "location" -o tsv
+    if ($LASTEXITCODE -ne 0) { throw "Failed to read the 'location' property of HCRP machine '$machineName'." }
+    Write-Host "HCRP machine region: '$machineLocation'"
 }
 
 # ---------------------------------------------------------------------------
@@ -243,7 +279,7 @@ if ($machineExists) {
 
 # 'az connectedvmware vm create' picks this up automatically, but we read it to fail early if it is missing.
 # The vCenter 'kind' is read too: the service validates the machine kind against this exact value.
-$vCenterJson = az connectedvmware vcenter show `
+$vCenterJson = Invoke-Az connectedvmware vcenter show `
     --name $VCenterName `
     --resource-group $VCenterResourceGroup `
     --subscription $VCenterSubscriptionId `
@@ -370,8 +406,9 @@ if (-not $vmInstanceExists) {
         "--inventory-item", $inventoryItemId        # binds the instance back to this inventory item
     )
 
-    # Run the create - this is the CLI equivalent of the two REST PUTs in the TSG.
-    az connectedvmware vm create @createArgs -o none
+    # Keep an existing machine in its current region; otherwise 'vm create' tries to move it to the vCenter's region and fails.
+    if (-not [string]::IsNullOrWhiteSpace($machineLocation)) { $createArgs += @("--location", $machineLocation) }    # Run the create - this is the CLI equivalent of the two REST PUTs in the TSG.
+    Invoke-Az connectedvmware vm create @createArgs -o none
 
     # Without the recreated Arc VM resources the delete cannot clear the link - stop rather than delete blindly.
     if ($LASTEXITCODE -ne 0) { throw "Failed to recreate Arc resources for vCenter VM '$VmName' as machine '$machineName' in rg '$machineResourceGroup'." }
@@ -410,7 +447,7 @@ if ($machineExists) {
 }
 
 # Delete the Arc-side resources using the names from the stale link; --yes skips the CLI confirmation prompt.
-az connectedvmware vm delete `
+Invoke-Az connectedvmware vm delete `
     --resource-group $machineResourceGroup `
     --name $machineName `
     --subscription $machineSubscriptionId `
@@ -430,7 +467,7 @@ Write-Host "Delete completed."
 Write-Host "`n=== Step 4: verifying the inventory item ===" -ForegroundColor Cyan
 
 # Re-run the same query as step 1.1 to read the current value of the pointer.
-$verifyJson = az connectedvmware vcenter inventory-item list `
+$verifyJson = Invoke-Az connectedvmware vcenter inventory-item list `
     --resource-group $VCenterResourceGroup `
     --vcenter $VCenterName `
     --subscription $VCenterSubscriptionId `
