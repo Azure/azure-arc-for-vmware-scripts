@@ -240,6 +240,15 @@ $expectedMachineKind = if ([string]::IsNullOrWhiteSpace($vCenterInfo.kind)) { "V
 # Without a custom location the resource bridge is broken and nothing below will work.
 if ([string]::IsNullOrWhiteSpace($customLocationId)) { throw "Could not read extendedLocation.name from vCenter '$VCenterName'. The resource bridge may be broken." }
 
+# Use the vCenter region explicitly for missing machines instead of relying on CLI defaults.
+$vCenterLocation = $vCenterInfo.location
+if ([string]::IsNullOrWhiteSpace($vCenterLocation)) { throw "Could not read location from vCenter '$VCenterName'." }
+
+# Read once for the batch so the custom location's region can be compared with the selected region.
+$customLocationRegion = Invoke-Az resource show --ids $customLocationId --query "location" -o tsv
+if ($LASTEXITCODE -ne 0) { throw "Failed to read the location of custom location '$customLocationId'." }
+if ([string]::IsNullOrWhiteSpace($customLocationRegion)) { throw "Could not read location from custom location '$customLocationId'." }
+
 # A vCenter that is not connected means the bridge is down - the recreate/delete steps would fail for every VM.
 if (-not [string]::IsNullOrWhiteSpace($vCenterInfo.connectionStatus) -and $vCenterInfo.connectionStatus -ne "Connected") {
     throw "vCenter '$VCenterName' has connectionStatus '$($vCenterInfo.connectionStatus)'. Bring the Azure Arc resource bridge online, then re-run this script."
@@ -247,9 +256,10 @@ if (-not [string]::IsNullOrWhiteSpace($vCenterInfo.connectionStatus) -and $vCent
 
 # Show what the whole batch will run against.
 Write-Host "Custom location    : $customLocationId"
+Write-Host "Custom location region: '$customLocationRegion'"
 Write-Host "Expected kind      : $expectedMachineKind or empty"
 Write-Host "Connection status  : $(if ([string]::IsNullOrWhiteSpace($vCenterInfo.connectionStatus)) { '(not reported)' } else { $vCenterInfo.connectionStatus })"
-Write-Host "vCenter location   : $(if ([string]::IsNullOrWhiteSpace($vCenterInfo.location)) { '(not reported)' } else { $vCenterInfo.location })"
+Write-Host "vCenter location   : '$vCenterLocation'"
 
 # ---------------------------------------------------------------------------
 # Step 0.4. Pre-condition gate - the operator must confirm the pre-conditions in writing.
@@ -442,6 +452,12 @@ foreach ($vmName in $vmNameList) {
         Write-Host "HCRP machine exists: $machineExists$(if ($machineExists) { " (kind '$machineKind')" })"
         Write-Host "VM instance exists : $vmInstanceExists"
 
+        if (-not $vmInstanceExists) {
+            # Preserve an existing machine's immutable region; missing machines use the vCenter region.
+            $recreateLocation = if (-not [string]::IsNullOrWhiteSpace($machineLocation)) { $machineLocation } else { $vCenterLocation }
+            Write-Host "Recreation region  : '$recreateLocation'"
+        }
+
         # --- Step 2.4. Refuse to act when the recreate would be rejected by the service. ---
 
         # The recreate creates a virtualMachineInstance under the existing machine, and the service
@@ -496,10 +512,8 @@ foreach ($vmName in $vmNameList) {
                 "--name", $machineName                      # must match the machine name in the stale ID
                 "--subscription", $machineSubscriptionId    # the machine may live in a different subscription
                 "--inventory-item", $inventoryItemId        # binds the instance back to this inventory item
+                "--location", $recreateLocation             # existing machine region, otherwise the vCenter region
             )
-
-            # Keep an existing machine in its current region; otherwise 'vm create' tries to move it to the vCenter's region and fails.
-            if (-not [string]::IsNullOrWhiteSpace($machineLocation)) { $createArgs += @("--location", $machineLocation) }
 
             # Run the create - this is the CLI equivalent of the two REST PUTs in the TSG.
             Write-Host "[$vmName] Step 2.6: recreating Arc resources from the vCenter VM as machine '$machineName' in rg '$machineResourceGroup' (sub $machineSubscriptionId)..." -ForegroundColor Yellow

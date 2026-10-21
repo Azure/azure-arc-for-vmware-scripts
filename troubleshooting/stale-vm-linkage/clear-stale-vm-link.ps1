@@ -274,7 +274,7 @@ if ($machineExists) {
 }
 
 # ---------------------------------------------------------------------------
-# Step 1.4. Read the custom location off the vCenter (informational).
+# Step 1.4. Read the vCenter and custom location regions.
 # ---------------------------------------------------------------------------
 
 # 'az connectedvmware vm create' picks this up automatically, but we read it to fail early if it is missing.
@@ -283,7 +283,7 @@ $vCenterJson = Invoke-Az connectedvmware vcenter show `
     --name $VCenterName `
     --resource-group $VCenterResourceGroup `
     --subscription $VCenterSubscriptionId `
-    --query "{customLocation:extendedLocation.name, kind:kind}" -o json
+    --query "{customLocation:extendedLocation.name, kind:kind, location:location}" -o json
 
 # Distinguish "could not read the vCenter" from "the vCenter has no custom location".
 if ($LASTEXITCODE -ne 0) { throw "Failed to read vCenter '$VCenterName' in rg '$VCenterResourceGroup'." }
@@ -300,8 +300,19 @@ $expectedMachineKind = if ([string]::IsNullOrWhiteSpace($vCenterInfo.kind)) { "V
 # Without a custom location the resource bridge is broken and nothing below will work.
 if ([string]::IsNullOrWhiteSpace($customLocationId)) { throw "Could not read extendedLocation.name from vCenter '$VCenterName'. The resource bridge may be broken." }
 
+# Use the vCenter region explicitly for a missing machine instead of relying on CLI defaults.
+$vCenterLocation = $vCenterInfo.location
+if ([string]::IsNullOrWhiteSpace($vCenterLocation)) { throw "Could not read location from vCenter '$VCenterName'." }
+
+# Read the custom location's own region so a region mismatch is visible before recreation.
+$customLocationRegion = Invoke-Az resource show --ids $customLocationId --query "location" -o tsv
+if ($LASTEXITCODE -ne 0) { throw "Failed to read the location of custom location '$customLocationId'." }
+if ([string]::IsNullOrWhiteSpace($customLocationRegion)) { throw "Could not read location from custom location '$customLocationId'." }
+
 # Show the custom location that 'vm create' will stamp on the recreated resource.
 Write-Host "Custom location    : $customLocationId"
+Write-Host "Custom location region: '$customLocationRegion'"
+Write-Host "vCenter region     : '$vCenterLocation'"
 Write-Host "Expected kind      : $expectedMachineKind or empty"
 
 # ---------------------------------------------------------------------------
@@ -324,6 +335,12 @@ if ($machineExists) {
 
 # Report the state of the child resource.
 Write-Host "VM instance exists : $vmInstanceExists"
+
+if (-not $vmInstanceExists) {
+    # Preserve an existing machine's immutable region; missing machines use the vCenter region.
+    $recreateLocation = if (-not [string]::IsNullOrWhiteSpace($machineLocation)) { $machineLocation } else { $vCenterLocation }
+    Write-Host "Recreation region  : '$recreateLocation'"
+}
 
 # In check-only mode, stop here before anything is created or deleted.
 if ($CheckOnly) {
@@ -404,10 +421,9 @@ if (-not $vmInstanceExists) {
         "--name", $machineName                      # must match the machine name in the stale ID
         "--subscription", $machineSubscriptionId    # the machine may live in a different subscription
         "--inventory-item", $inventoryItemId        # binds the instance back to this inventory item
+        "--location", $recreateLocation             # existing machine region, otherwise the vCenter region
     )
-
-    # Keep an existing machine in its current region; otherwise 'vm create' tries to move it to the vCenter's region and fails.
-    if (-not [string]::IsNullOrWhiteSpace($machineLocation)) { $createArgs += @("--location", $machineLocation) }    # Run the create - this is the CLI equivalent of the two REST PUTs in the TSG.
+    # Run the create - this is the CLI equivalent of the two REST PUTs in the TSG.
     Invoke-Az connectedvmware vm create @createArgs -o none
 
     # Without the recreated Arc VM resources the delete cannot clear the link - stop rather than delete blindly.
