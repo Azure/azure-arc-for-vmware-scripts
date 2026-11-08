@@ -7,15 +7,13 @@
     The script reads logs without modifying Azure, Kubernetes or vCenter resources. It does not
     connect to vCenter, collect vCenter/ESXi logs, or dump inventory or configuration.
 
-    Both scenarios collect the same permitted log sources when available. During onboarding,
-    the bridge or operator may not exist yet; missing prerequisites and failures are recorded.
+    Missing prerequisites and collection failures are recorded. During onboarding, the bridge
+    or operator may not exist yet.
 
     Operator text and command output pass through best-effort secret redaction. The appliance
     bundle is produced by the Azure CLI and is NOT redacted by this script. Both log sources
     may contain customer identifiers or vCenter error messages. Review before sharing.
 
-.PARAMETER Scenario
-    Onboarding or Onboarded, recorded in the summary.
 .PARAMETER KubeConfig
     Explicit path to the resource bridge kubeconfig. Used for access, never copied into output.
 .PARAMETER ApplianceVmIp
@@ -34,14 +32,13 @@
     Leave the output folder uncompressed.
 
 .EXAMPLE
-    .\arcvmware-collect-logs.ps1 -Scenario Onboarding -ApplianceVmIp 10.0.0.50
+    .\arcvmware-collect-logs.ps1 -ApplianceVmIp 10.0.0.50
 .EXAMPLE
-    .\arcvmware-collect-logs.ps1 -Scenario Onboarded `
-        -KubeConfig .\my-bridge-appliance.kubeconfig -SinceHours 48 -IncidentId 123456789
+    .\arcvmware-collect-logs.ps1 -KubeConfig .\my-bridge-appliance.kubeconfig `
+        -SinceHours 48 -IncidentId 123456789
 #>
 
 param(
-    [ValidateSet('Onboarding', 'Onboarded')][string]$Scenario = 'Onboarded',
     [string]$KubeConfig,
     [string]$ApplianceVmIp,
     [ValidateRange(1, 8760)][int]$SinceHours = 24,
@@ -145,7 +142,7 @@ function Invoke-Kubectl {
     $output
 }
 
-Write-Host "Collecting VMware operator and Arc Resource Bridge logs only ($Scenario)."
+Write-Host 'Collecting VMware operator and Arc Resource Bridge logs only.'
 Write-Warning 'Logs can contain customer information. The appliance bundle is not redacted by this script. Review all output before sharing.'
 
 if ($KubeConfig) {
@@ -223,7 +220,6 @@ $script:Manifest | ConvertTo-Json -Depth 5 |
 $summary = New-Object System.Text.StringBuilder
 $null = $summary.AppendLine('# Arc-enabled VMware diagnostic logs')
 $null = $summary.AppendLine()
-$null = $summary.AppendLine("Scenario: $Scenario")
 if ($IncidentId) { $null = $summary.AppendLine("Incident: $(Protect-Secret $IncidentId)") }
 $null = $summary.AppendLine("Started UTC: $($startedUtc.ToString('u'))")
 $null = $summary.AppendLine("Current operator log window: $SinceHours hours. Previous logs use retained history.")
