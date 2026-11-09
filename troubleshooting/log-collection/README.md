@@ -1,171 +1,178 @@
-# Diagnostic log collection for Azure Arc-enabled VMware vSphere
+# Diagnostic logs for Azure Arc-enabled VMware vSphere
 
-`arcvmware-collect-logs.ps1` collects **only VMware operator logs and the Arc Resource Bridge
-diagnostic bundle** for a support case. It reads logs without changing Azure,
-Kubernetes or vCenter resources. Files are written locally; nothing is uploaded automatically.
+`arcvmware-collect-logs.ps1` collects VMware operator logs and, optionally, the
+Arc Resource Bridge diagnostic bundle. It writes the results locally for you to review
+before sharing with support. The script does not upload the collected logs.
 
-## Collection and privacy boundary
+## What is collected?
 
-| Collected | Scope |
+| Output | Normal run | With `-SkipApplianceLogs` |
+|---|---|---|
+| Current VMware operator container logs | Last 24 hours by default; change with `-SinceHours`. | Same. |
+| Previous operator container logs | Collected if Kubernetes retains a previous container's logs. | Same. |
+| Arc Resource Bridge diagnostic bundle | Collected using `az arcappliance logs vmware`. | Not collected. |
+| Summary, manifest and local ZIP | Created; `-NoArchive` disables only the ZIP. | Same, with the appliance step marked `Skipped`. |
+
+Operator-only collection retains the separately collected operator logs, but omits the
+broader appliance diagnostics. Previous logs are not restricted by `-SinceHours`.
+Collect promptly: Kubernetes may no longer retain logs even within the requested window.
+
+**Privacy:** logs can contain resource names, addresses, vCenter errors and other customer
+information. Captured operator text and command results receive best-effort secret redaction.
+The appliance bundle and interactive appliance CLI output are **not redacted by this script**.
+Review all files before sharing.
+
+The script does not request vCenter/ESXi support bundles or separately export inventories,
+Kubernetes resource bodies, other containers' logs, workstation diagnostics or configuration.
+**The appliance bundle's contents are determined by the installed Azure CLI extension**;
+the script does not filter that bundle or guarantee which files it excludes.
+The appliance CLI may use vCenter credentials, so do not assume the full collection never
+connects to vCenter.
+
+## Before you start
+
+Run from the resource bridge deployment management machine in an interactive console or RDP
+session. Follow your organization's PowerShell execution policy. Remote PowerShell is not
+supported by `az arcappliance`.
+
+| Requirement | When needed |
 |---|---|
-| Current VMware operator logs | Only the VMware operator container on the identified resource bridge; default last 24 hours. |
-| Previous VMware operator logs | The previous instance of that same container, if Kubernetes still retains its logs. |
-| Appliance diagnostic bundle | Output of the supported `az arcappliance logs vmware` command. Bundle contents are determined by the installed Azure CLI extension. |
-| Collection results | Optional case identifier, timestamp, log window and per-step success, failure or missing prerequisites. |
+| PowerShell 5.1 or 7+ | Always. |
+| `kubectl` and access to the bridge's Kubernetes API | Operator logs. |
+| Azure CLI with the `arcappliance` extension and an authorized Azure login | Downloading bridge credentials or collecting the appliance bundle. |
+| vCenter address and vSphere credentials | The appliance CLI may prompt for them; not needed for operator-only collection. |
+| Network access to the appliance VM on SSH TCP port 22 | Appliance bundle collection. |
 
-The script **does not directly connect to vCenter or ESXi** and does not request their logs or support
-bundles. The supported appliance CLI may prompt for vCenter address and vSphere credentials;
-enter them only in its interactive console prompts. The script does not collect Azure resource
-inventories, VM inventories, Kubernetes custom-resource bodies, deployments, pod descriptions,
-events, Secret inventories or contents, other containers'
-logs, workstation details, proxy settings, network probes, onboarding script logs, `kva.log`,
-appliance YAML files, kubeconfig contents or SSH keys.
+The script does not install tools, sign in automatically or deploy resources.
 
-Pod names and namespaces are read only to locate the operator and name its log files.
-The script downloads credentials for the explicitly identified resource bridge, or uses an
-explicitly supplied kubeconfig. It never uses the workstation's default Kubernetes context.
-Downloaded kubeconfig and log keys are stored in a unique temporary directory **outside the
-collection output**, passed only to the appliance CLI and kubectl, and deleted when the script
-finishes, including after collection failures. If the process is forcibly terminated, temporary
-credentials may remain; delete the corresponding `arcvmware-credentials-*` directory securely.
+## Quick start: collect both log sources
 
-**This is source minimization, not a guarantee that logs contain no customer data.**
-Operator and appliance logs can themselves contain vCenter error messages, resource names,
-addresses and other customer identifiers. The script applies best-effort redaction of common
-password/token fields, URL credentials, bearer tokens, JWTs and PEM private keys to captured
-operator text and command output. Interactive appliance CLI output is displayed directly in the
-console, not saved or redacted by the script. Redaction does not remove all identifiers or
-arbitrary sensitive text.
+In Azure portal, open the **Arc Resource Bridge** resource and copy its **Resource ID**
+from Properties or JSON View. It has this format:
 
-**The appliance bundle is generated directly by the Azure CLI and is not redacted by this
-script.** Review the entire output, including the bundle, under your organization's privacy
-and support-data-sharing requirements before attaching it to a case.
+```text
+/subscriptions/<subscription-id>/resourceGroups/<group>/providers/Microsoft.ResourceConnector/appliances/<name>
+```
 
-## Where to run it
-
-Use the customer's resource bridge deployment workstation, in a console session or RDP.
-Remote PowerShell is not supported by `az arcappliance`.
-
-| Prerequisite | Purpose |
-|---|---|
-| PowerShell 5.1 or 7+ | Runs the script. |
-| Azure CLI with the `arcappliance` extension | Downloads bridge credentials and collects the appliance bundle. |
-| Azure login in the bridge's tenant, with appropriate permissions | Allows subscription selection, credential retrieval and appliance CLI operations. |
-| `kubectl` | Discovers operator pods and reads their logs. |
-| Arc Resource Bridge ARM resource ID | Identifies the subscription, resource group and bridge for credential retrieval. |
-
-Missing prerequisites and command failures are reported in `SUMMARY.md` and `manifest.json`.
-Other available collection steps continue. The script does not install tools, log in automatically
-or deploy resources.
-
-## Usage
-
-### Recommended: supply the Azure resource IDs
-
-In Azure portal, open the **Arc Resource Bridge** resource and copy its **Resource ID** from
-Properties or JSON View. Do the same for the **vCenter** resource. These IDs can belong to
-different subscriptions. The vCenter ID is optional support-case context only; the script does
-not query vCenter or verify its association with the supplied bridge.
+Open PowerShell in the directory containing the script. Replace the placeholders below:
 
 ```powershell
 az login --tenant '<bridge-tenant-id>'
-.\arcvmware-collect-logs.ps1 `
-    -VCenterResourceId '/subscriptions/<vcenter-subscription-id>/resourceGroups/<vcenter-group>/providers/Microsoft.ConnectedVMwarevSphere/vCenters/<vcenter-name>' `
-    -ResourceBridgeId '/subscriptions/<bridge-subscription-id>/resourceGroups/<bridge-group>/providers/Microsoft.ResourceConnector/appliances/<bridge-name>'
+.\arcvmware-collect-logs.ps1 -ResourceBridgeId '<full-resource-bridge-id>'
 ```
 
-Replace the placeholders with the actual IDs. The script:
+If already signed in to the correct tenant with the required access, no new login is needed.
+The script selects the **bridge's subscription**, downloads temporary kubeconfig and log
+credentials, collects the appliance bundle, then collects operator logs and creates a ZIP.
+No appliance IP or kubeconfig path is needed.
 
-1. Selects the **bridge's subscription** with `az account set`.
-2. Downloads its kubeconfig and log keys with `az arcappliance get-credentials`.
-3. Collects the appliance bundle and current/previous VMware operator logs.
-4. Creates a local ZIP and deletes the temporary credentials.
+**Answer any CLI prompts for vCenter address, vSphere username and password in the console.**
+Downloaded bridge credentials do not necessarily remove these prompts. The public
+[CLI reference](https://learn.microsoft.com/cli/azure/arcappliance/logs#az-arcappliance-logs-vmware)
+describes the vSphere account as the one used for on-premises infrastructure guest management.
+Enter the password only at the interactive prompt, never in the script or command line.
 
-No appliance IP or kubeconfig path is needed for this normal flow. Optional `-SinceHours 48`
-changes the current operator log window; `-IncidentId` labels the support case.
+Appliance collection can take several minutes. Prompts and CLI progress remain visible;
+operator collection starts after that command exits. On completion, the script prints the
+output folder and ZIP paths.
 
-### Appliance collection prompts and progress
+`-VCenterResourceId` is **optional**: it only records a customer-supplied Azure resource ID
+in the summary. It does not supply vSphere credentials, select the subscription or verify
+the vCenter's association with the bridge. The two resource IDs may belong to different
+subscriptions; bridge access always uses the bridge's subscription.
 
-Run the script interactively and answer any Azure CLI prompts for vCenter address, vSphere
-username and password. Retrieving the bridge's kubeconfig and log keys does not necessarily
-remove these prompts. Do not put the password in the script or command line.
+## Collect operator logs only
 
-The appliance CLI shares the current console so prompts and progress remain visible, including
-prompts without a newline. Collection can take several minutes. `arcappliance-logs.txt` records
-the command outcome, not its interactive transcript; on failure, also read the CLI error in the
-console. Operator collection runs after the appliance command exits.
-
-If collection still cannot proceed after answering the prompts, follow the
-[public resource bridge troubleshooting guidance](https://learn.microsoft.com/azure/azure-arc/resource-bridge/troubleshoot-resource-bridge#logs-collection).
-Run from the deployment management machine, or another machine meeting the management-machine
-requirements. The management machine must be able to reach the appliance VM over SSH on TCP
-port 22. To collect operator logs without running the appliance command, use `-SkipApplianceLogs`.
-
-### Incomplete onboarding: use an existing kubeconfig
-
-If the bridge has not been registered in Azure, automatic credential retrieval may not be
-available. Use the appliance kubeconfig created by deployment, if it exists:
+To omit the appliance bundle and avoid vSphere credential prompts:
 
 ```powershell
-.\arcvmware-collect-logs.ps1 -KubeConfig .\my-bridge-appliance.kubeconfig `
-    -SinceHours 48 -IncidentId 123456789
+.\arcvmware-collect-logs.ps1 -ResourceBridgeId '<full-resource-bridge-id>' `
+    -SkipApplianceLogs
 ```
 
-Replace the example path with the actual file path. In this mode, no credentials are downloaded.
-For appliance bundle collection, the CLI also needs the existing deployment log keys in its
-default credentials directory (`C:\ProgramData\kva.ssh` on Windows; `~/.kva/.ssh` on Linux/macOS).
-Log in and select the bridge's intended subscription yourself when omitting `-ResourceBridgeId`.
-Operator-only collection (`-SkipApplianceLogs`) with an existing kubeconfig needs no Azure login.
+Azure login is still required because the script downloads the bridge's kubeconfig.
 
-Only available log sources can be collected. If the appliance or operator does not yet exist,
-the script reports that limitation rather than collecting workstation or vCenter data instead.
+If you already have a bridge kubeconfig, use its actual file path instead:
 
-Run promptly after an issue: previous container logs can be lost on another
-restart, and current logs are limited by Kubernetes retention even within the requested window.
+```powershell
+.\arcvmware-collect-logs.ps1 -KubeConfig '.\my-bridge-appliance.kubeconfig' `
+    -SkipApplianceLogs
+```
 
-### Azure CLI context and authorization
+This second command needs `kubectl`, but **no Azure CLI or Azure login**.
+The script always uses the supplied or downloaded kubeconfig, never the workstation's default
+Kubernetes context. A supplied kubeconfig bypasses credential download; a missing file is
+reported rather than replaced automatically.
 
-The appliance CLI uses Azure even when accessing logs over SSH. With `-ResourceBridgeId`, the
-script **changes the default Azure CLI subscription to the bridge's subscription and leaves it
-selected**. It does not change your login or infer the tenant from the resource ID.
-Sign in to the correct bridge tenant first.
+### During incomplete onboarding
 
-The script checks `az account show` for an enabled subscription and passes its ID explicitly to
-credential retrieval and appliance collection. It never saves the account response.
-Malformed resource IDs are rejected before collection. Context or credential failures are
-reported; an explicitly supplied kubeconfig still allows independent operator collection.
+Automatic credential retrieval may be unavailable before the bridge is registered in Azure.
+If deployment has produced a kubeconfig, use the existing-file command above.
+If the appliance or operator does not exist yet, the script reports missing logs rather than
+collecting another source instead.
 
-An enabled subscription does **not** prove sufficient permissions or fresh credentials.
-If Azure CLI reports `AuthorizationFailed`, check that your account has access to the bridge's
-subscription and the required permissions. Sign in again after a permission change if needed.
-The script reports failed CLI commands instead of treating a context check as proof of access.
+To also request the appliance bundle with an existing kubeconfig, omit `-SkipApplianceLogs`.
+Sign in to Azure and select the intended subscription first, or supply `-ResourceBridgeId`
+to select its subscription. The CLI also needs existing deployment log keys in its default
+credentials directory: `C:\ProgramData\kva.ssh` on Windows or `~/.kva/.ssh` on Linux/macOS.
+The script does not download credentials when `-KubeConfig` is supplied.
 
-Python `SyntaxWarning` output from an installed CLI extension is separate from authorization
-failure. Successful command stderr is shown as a warning, not mixed into JSON stdout.
+## Commands the script runs
 
-## Output
+| Command | Purpose |
+|---|---|
+| `az account set --subscription ...` | Select the bridge subscription when its resource ID is supplied and Azure access is needed. The subscription remains selected afterward. |
+| `az account show` | Check that the active subscription is enabled and matches the bridge ID, if supplied. |
+| `az arcappliance get-credentials` | Download kubeconfig and log keys when a bridge ID is supplied without `-KubeConfig` and a log source is enabled. |
+| `az arcappliance logs vmware` | Collect the appliance bundle; omitted with `-SkipApplianceLogs`. |
+| `kubectl get pods` | Read only matching operator pod names and namespaces for discovery. |
+| `kubectl logs` | Read current and previous logs from the `vmware-operator` container on each discovered pod. |
+
+All `kubectl` calls use an explicit kubeconfig and a 60-second request timeout.
+With an existing kubeconfig and `-SkipApplianceLogs`, no Azure commands run.
+With `-SkipOperatorLogs`, no `kubectl` commands run. Skipping both sources runs neither tool.
+
+Downloaded credentials are kept in a unique temporary directory outside the output and
+deleted when the script finishes, including after collection failures. Supplied kubeconfig
+files are not deleted. If the process is forcibly terminated, temporary credentials may
+remain; securely remove only the corresponding `arcvmware-credentials-*` directory.
+The script does not copy these credentials into its output or ZIP.
+
+## Check the results
+
+Read `SUMMARY.md` and `manifest.json` first. Available steps continue after individual
+collection failures, so the script finishing does **not** mean every source succeeded.
+`Collected` means the command succeeded; also inspect the actual files.
 
 ```text
 01-appliance/
-    arcappliance-logs.txt          CLI completion status or collection error; transcript stays in console
-    appliance-log-bundle/         Bundle produced by the appliance CLI
+    arcappliance-logs.txt       CLI outcome or collection error, not an interactive transcript
+    appliance-log-bundle/      Bundle generated by the CLI
 02-operator/
     <namespace>-<pod>-current.log
     <namespace>-<pod>-previous.log
-SUMMARY.md                        Collection scope, results and privacy warning
-manifest.json                     Machine-readable per-step results
+SUMMARY.md
+manifest.json
 ```
 
-A ZIP is created alongside the output directory unless `-NoArchive` is supplied.
-The output directory must be new or empty, so an old inventory/configuration dump cannot
-accidentally be included. Previous output is never cleaned or reused automatically.
+Files may be absent when a source is skipped or prerequisites are missing.
+The output folder is named `arcvmware-logs-<timestamp>` by default, with a ZIP alongside it.
+Use `-OutDir` to choose a **new or empty** directory; existing output is not reused.
 
-## Checking the script
+After a run, substitute the printed output folder path:
 
-Run these commands from the directory containing the script. Each test uses a unique output
-directory. Follow your organization's PowerShell execution policy; do not disable it to run tests.
+```powershell
+$out = '<output-folder-path>'
+Get-Content (Join-Path $out 'manifest.json') -Raw |
+    ConvertFrom-Json | Format-Table Description, Status, Detail -AutoSize
+Get-ChildItem -LiteralPath $out -Recurse -File
+```
 
-### Local smoke test (no appliance access)
+For a full successful run, confirm the appliance bundle contains files and the current
+operator logs contain diagnostic lines. Missing previous logs can be normal when the
+container has not restarted. Check the ZIP as well: do not share kubeconfig or log keys.
+
+### Local smoke test without appliance access
 
 ```powershell
 $out = Join-Path $env:TEMP ("arcvmware-smoke-" + [guid]::NewGuid().ToString('N'))
@@ -175,54 +182,40 @@ Get-Content (Join-Path $out 'manifest.json') -Raw |
 Test-Path "$out.zip"
 ```
 
-Expect two `Skipped` entries, a summary and manifest, empty source directories, and a ZIP.
-This checks local reporting and packaging only, not log access or redaction.
+Expect two `Skipped` entries, a summary, manifest, empty source directories and a ZIP.
+This checks local reporting and packaging only, not live log access or redaction.
 
-### Test against a resource bridge
+## Troubleshooting
 
-Use an authorized registered test bridge on the deployment workstation:
+| Problem | What to check |
+|---|---|
+| Appliance collection is waiting | Look for CLI prompts in the console and answer them. On a command failure, read the CLI error there; its interactive transcript is not saved. |
+| Appliance logs cannot be collected | Check management-machine requirements and SSH TCP port 22 access to the appliance VM. See the public troubleshooting guide below. |
+| `AuthorizationFailed` or a subscription mismatch | Sign in to the bridge's tenant with access to its subscription and the required permissions. An enabled subscription alone does not prove sufficient access. Refresh your login after permission changes if needed. |
+| Python `SyntaxWarning` messages | These are separate from authorization failures. Account-check stderr is kept separate from JSON output. Read the command outcome and any accompanying error. |
+| No operator pods or logs | Check that the appliance/operator exists and that the kubeconfig can access its Kubernetes API. |
 
-```powershell
-$out = Join-Path $env:TEMP ("arcvmware-live-" + [guid]::NewGuid().ToString('N'))
-.\arcvmware-collect-logs.ps1 -ResourceBridgeId '<full-bridge-arm-resource-id>' `
-    -SinceHours 1 -OutDir $out
-Get-Content (Join-Path $out 'manifest.json') -Raw |
-    ConvertFrom-Json | Format-Table Description, Status, Detail -AutoSize
-Get-ChildItem (Join-Path $out '01-appliance\appliance-log-bundle') -Recurse -File
-Get-ChildItem (Join-Path $out '02-operator') -File
-Get-Content (Join-Path $out 'SUMMARY.md')
-Test-Path "$out.zip"
-```
-
-Confirm the appliance bundle contains files, current operator logs contain diagnostic lines,
-and the ZIP contains only the documented output. Previous-log collection can fail normally
-when no previous container exists; check its recorded error. `Collected` means the command
-succeeded, not that every expected artifact is present. Inspect the files as well as the manifest.
-Also check that credential retrieval is `Collected` and that no kubeconfig or log keys appear in
-the output/ZIP. The script continues after individual collection failures, so process exit status
-alone is not a complete success check.
-
-To isolate a failing source, repeat with a fresh output directory and `-SkipApplianceLogs`
-or `-SkipOperatorLogs`. Review all files for customer information before sharing, including
-the unredacted appliance bundle.
+To isolate a source, rerun with a fresh output folder and `-SkipApplianceLogs` or
+`-SkipOperatorLogs`.
 
 ## Parameters
 
 | Parameter | Effect |
 |---|---|
-| `-ResourceBridgeId <id>` | Full ARB ARM ID; selects its subscription and downloads temporary credentials when no kubeconfig is supplied. |
-| `-VCenterResourceId <id>` | Optional full vCenter ARM ID, recorded as customer-supplied case context only. |
-| `-KubeConfig <path>` | Existing appliance kubeconfig; bypasses credential download and is never copied. |
-| `-SinceHours <n>` | Current operator log window; defaults to 24 hours. Does not control the appliance bundle or previous logs. |
-| `-IncidentId <id>` | Optional support case identifier. |
-| `-SkipApplianceLogs` | Collect operator logs only. |
-| `-SkipOperatorLogs` | Collect the appliance bundle only. |
-| `-NoArchive` | Leave files uncompressed. |
-| `-OutDir <path>` | Choose a new or empty output directory. |
+| `-ResourceBridgeId <id>` | Full bridge ARM resource ID; selects its subscription when Azure access is needed and downloads credentials unless `-KubeConfig` is supplied. |
+| `-VCenterResourceId <id>` | Optional vCenter ARM resource ID, recorded as support-case context only. |
+| `-KubeConfig <path>` | Existing bridge kubeconfig; bypasses credential download. |
+| `-SinceHours <n>` | Current operator log window, 1-8760 hours; default 24. Does not limit previous logs or the appliance bundle. |
+| `-IncidentId <id>` | Optional support case label in the summary. |
+| `-SkipApplianceLogs` | Omit the appliance bundle. |
+| `-SkipOperatorLogs` | Omit operator logs. |
+| `-NoArchive` | Do not create a ZIP; keep the output folder, summary and manifest. |
+| `-OutDir <path>` | Use a new or empty output directory. |
 
 ## Public documentation
 
-- [Collect logs from the Arc resource bridge](https://learn.microsoft.com/azure/azure-arc/vmware-vsphere/administer-arc-vmware#collect-logs-from-the-arc-resource-bridge): customer-facing log collection procedure.
-- [Azure CLI resource bridge commands](https://learn.microsoft.com/cli/azure/arcappliance): credential retrieval and subscription arguments.
-- [Azure CLI appliance log commands](https://learn.microsoft.com/cli/azure/arcappliance/logs): kubeconfig, logging credentials and output options.
-- [Kubernetes container logs](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_logs/): current/previous container logs and time-window options.
+- [Collect logs from the Arc resource bridge](https://learn.microsoft.com/azure/azure-arc/vmware-vsphere/administer-arc-vmware#collect-logs-from-the-arc-resource-bridge).
+- [Azure CLI resource bridge commands](https://learn.microsoft.com/cli/azure/arcappliance).
+- [Azure CLI appliance log commands](https://learn.microsoft.com/cli/azure/arcappliance/logs).
+- [Troubleshoot Azure Arc resource bridge: log collection](https://learn.microsoft.com/azure/azure-arc/resource-bridge/troubleshoot-resource-bridge#logs-collection).
+- [Kubernetes container logs](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_logs/).
