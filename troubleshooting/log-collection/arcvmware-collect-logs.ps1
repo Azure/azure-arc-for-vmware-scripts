@@ -5,12 +5,14 @@
 .DESCRIPTION
     Run on the customer's resource bridge deployment workstation using a console session or RDP.
     The script reads logs without modifying Azure, Kubernetes or vCenter resources. It does not
-    connect to vCenter, collect vCenter/ESXi logs, or dump inventory or configuration.
+    directly connect to vCenter, request vCenter/ESXi logs, or dump inventory or configuration.
+    The supported appliance CLI may prompt for vSphere credentials in the console.
 
     Missing prerequisites and collection failures are recorded. During onboarding, the bridge
     or operator may not exist yet.
 
-    Operator text and command output pass through best-effort secret redaction. The appliance
+    Captured operator text and command output pass through best-effort secret redaction.
+    Interactive appliance CLI output is displayed directly, not saved or redacted. The appliance
     bundle is produced by the Azure CLI and is NOT redacted by this script. Both log sources
     may contain customer identifiers or vCenter error messages. Review before sharing.
 
@@ -253,7 +255,21 @@ try {
             $logArgs = @('arcappliance', 'logs', 'vmware', '--kubeconfig', $script:ResolvedKubeConfig,
                 '--out-dir', $applianceLogDir, '--subscription', $account.id)
             if ($credentialsDir) { $logArgs += @('--credentials-dir', $credentialsDir) }
-            Invoke-Az @logArgs
+            Write-Host 'The appliance CLI may ask for vCenter address, vSphere username and password. Answer its prompts in this console.'
+            Write-Host 'Collection can take several minutes. Appliance CLI output is displayed directly and is not saved or redacted.'
+            # Inherit the console so prompts without a newline are not trapped in captured output.
+            $quotedArgs = @($logArgs | ForEach-Object { '"' + $_ + '"' })
+            $process = Start-Process -FilePath (Get-Command az).Source -ArgumentList $quotedArgs `
+                -NoNewWindow -Wait -PassThru
+            try {
+                if ($process.ExitCode -ne 0) {
+                    throw "az arcappliance logs vmware failed (exit $($process.ExitCode)). Review the Azure CLI error displayed in this console."
+                }
+                'Appliance CLI completed successfully. Its interactive output was displayed in the console, not saved.'
+            }
+            finally {
+                $process.Dispose()
+            }
         }
     }
 

@@ -13,9 +13,11 @@ Kubernetes or vCenter resources. Files are written locally; nothing is uploaded 
 | Appliance diagnostic bundle | Output of the supported `az arcappliance logs vmware` command. Bundle contents are determined by the installed Azure CLI extension. |
 | Collection results | Optional case identifier, timestamp, log window and per-step success, failure or missing prerequisites. |
 
-The script **does not connect to vCenter or ESXi** and does not request their logs or support
-bundles. It does not collect Azure resource inventories, VM inventories, Kubernetes custom-resource
-bodies, deployments, pod descriptions, events, Secret inventories or contents, other containers'
+The script **does not directly connect to vCenter or ESXi** and does not request their logs or support
+bundles. The supported appliance CLI may prompt for vCenter address and vSphere credentials;
+enter them only in its interactive console prompts. The script does not collect Azure resource
+inventories, VM inventories, Kubernetes custom-resource bodies, deployments, pod descriptions,
+events, Secret inventories or contents, other containers'
 logs, workstation details, proxy settings, network probes, onboarding script logs, `kva.log`,
 appliance YAML files, kubeconfig contents or SSH keys.
 
@@ -31,7 +33,9 @@ credentials may remain; delete the corresponding `arcvmware-credentials-*` direc
 Operator and appliance logs can themselves contain vCenter error messages, resource names,
 addresses and other customer identifiers. The script applies best-effort redaction of common
 password/token fields, URL credentials, bearer tokens, JWTs and PEM private keys to captured
-operator text and CLI output. It does not remove all identifiers or arbitrary sensitive text.
+operator text and command output. Interactive appliance CLI output is displayed directly in the
+console, not saved or redacted by the script. Redaction does not remove all identifiers or
+arbitrary sensitive text.
 
 **The appliance bundle is generated directly by the Azure CLI and is not redacted by this
 script.** Review the entire output, including the bundle, under your organization's privacy
@@ -80,6 +84,23 @@ Replace the placeholders with the actual IDs. The script:
 No appliance IP or kubeconfig path is needed for this normal flow. Optional `-SinceHours 48`
 changes the current operator log window; `-IncidentId` labels the support case.
 
+### Appliance collection prompts and progress
+
+Run the script interactively and answer any Azure CLI prompts for vCenter address, vSphere
+username and password. Retrieving the bridge's kubeconfig and log keys does not necessarily
+remove these prompts. Do not put the password in the script or command line.
+
+The appliance CLI shares the current console so prompts and progress remain visible, including
+prompts without a newline. Collection can take several minutes. `arcappliance-logs.txt` records
+the command outcome, not its interactive transcript; on failure, also read the CLI error in the
+console. Operator collection runs after the appliance command exits.
+
+If collection still cannot proceed after answering the prompts, follow the
+[public resource bridge troubleshooting guidance](https://learn.microsoft.com/azure/azure-arc/resource-bridge/troubleshoot-resource-bridge#logs-collection).
+Run from the deployment management machine, or another machine meeting the management-machine
+requirements. The management machine must be able to reach the appliance VM over SSH on TCP
+port 22. To collect operator logs without running the appliance command, use `-SkipApplianceLogs`.
+
 ### Incomplete onboarding: use an existing kubeconfig
 
 If the bridge has not been registered in Azure, automatic credential retrieval may not be
@@ -126,7 +147,7 @@ failure. Successful command stderr is shown as a warning, not mixed into JSON st
 
 ```text
 01-appliance/
-    arcappliance-logs.txt          CLI output or collection error
+    arcappliance-logs.txt          CLI completion status or collection error; transcript stays in console
     appliance-log-bundle/         Bundle produced by the appliance CLI
 02-operator/
     <namespace>-<pod>-current.log
