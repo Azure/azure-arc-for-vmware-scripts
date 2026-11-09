@@ -1,14 +1,14 @@
 # Diagnostic log collection for Azure Arc-enabled VMware vSphere
 
 `arcvmware-collect-logs.ps1` collects **only VMware operator logs and the Arc Resource Bridge
-diagnostic bundle** for a support case or IcM. It reads logs without changing Azure,
+diagnostic bundle** for a support case. It reads logs without changing Azure,
 Kubernetes or vCenter resources. Files are written locally; nothing is uploaded automatically.
 
 ## Collection and privacy boundary
 
 | Collected | Scope |
 |---|---|
-| Current VMware operator logs | Only the `vmware-operator` container in pods matching `control-plane=vmware-operator`; default last 24 hours, without a correlation-ID filter. |
+| Current VMware operator logs | Only the VMware operator container on the identified resource bridge; default last 24 hours. |
 | Previous VMware operator logs | The previous instance of that same container, if Kubernetes still retains its logs. |
 | Appliance diagnostic bundle | Output of the supported `az arcappliance logs vmware` command. Bundle contents are determined by the installed Azure CLI extension. |
 | Collection results | Optional case identifier, timestamp, log window and per-step success, failure or missing prerequisites. |
@@ -115,10 +115,9 @@ Malformed resource IDs are rejected before collection. Context or credential fai
 reported; an explicitly supplied kubeconfig still allows independent operator collection.
 
 An enabled subscription does **not** prove sufficient permissions or fresh credentials.
-`AuthorizationFailed` for `Microsoft.ResourceConnector/telemetryconfig/read` or
-`Microsoft.Resources/subscriptions/providers/read` needs the correct subscription/tenant
-and permissions, or credential refresh after an access change. The script reports nonzero CLI
-exits as failures instead of treating a context check as proof of access.
+If Azure CLI reports `AuthorizationFailed`, check that your account has access to the bridge's
+subscription and the required permissions. Sign in again after a permission change if needed.
+The script reports failed CLI commands instead of treating a context check as proof of access.
 
 Python `SyntaxWarning` output from an installed CLI extension is separate from authorization
 failure. Successful command stderr is shown as a warning, not mixed into JSON stdout.
@@ -194,8 +193,15 @@ the unredacted appliance bundle.
 | `-VCenterResourceId <id>` | Optional full vCenter ARM ID, recorded as customer-supplied case context only. |
 | `-KubeConfig <path>` | Existing appliance kubeconfig; bypasses credential download and is never copied. |
 | `-SinceHours <n>` | Current operator log window; defaults to 24 hours. Does not control the appliance bundle or previous logs. |
-| `-IncidentId <id>` | Optional support case or IcM identifier. |
+| `-IncidentId <id>` | Optional support case identifier. |
 | `-SkipApplianceLogs` | Collect operator logs only. |
 | `-SkipOperatorLogs` | Collect the appliance bundle only. |
 | `-NoArchive` | Leave files uncompressed. |
 | `-OutDir <path>` | Choose a new or empty output directory. |
+
+## Public documentation
+
+- [Collect logs from the Arc resource bridge](https://learn.microsoft.com/azure/azure-arc/vmware-vsphere/administer-arc-vmware#collect-logs-from-the-arc-resource-bridge): customer-facing log collection procedure.
+- [Azure CLI resource bridge commands](https://learn.microsoft.com/cli/azure/arcappliance): credential retrieval and subscription arguments.
+- [Azure CLI appliance log commands](https://learn.microsoft.com/cli/azure/arcappliance/logs): kubeconfig, logging credentials and output options.
+- [Kubernetes container logs](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_logs/): current/previous container logs and time-window options.

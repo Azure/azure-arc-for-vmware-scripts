@@ -25,7 +25,7 @@
 .PARAMETER SinceHours
     Look-back window for current operator logs; default 24. Previous logs use retained history.
 .PARAMETER IncidentId
-    Optional support case or IcM identifier recorded in the summary.
+    Optional support case identifier recorded in the summary.
 .PARAMETER OutDir
     A new or empty directory. Nonempty directories are rejected to avoid including old data.
 .PARAMETER SkipApplianceLogs
