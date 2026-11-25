@@ -6,6 +6,9 @@
     This script finds the inventory item, works out which Azure resources are missing, recreates the missing
     Arc machine and virtualMachineInstance resources from the actual vCenter VM, then deletes the Arc VM so
     the delete clears the stale link.
+    If an existing instance points to a different inventory item or custom location, the script offers to
+    replace that association after verifying the selected VM's identity. This keeps the Arc machine and
+    the repaired association instead of running the normal cleanup delete.
     Uses only 'az' CLI commands - no direct REST calls.
     Nothing in VMware vCenter is created, modified or deleted by this script.
 
@@ -207,6 +210,10 @@ $inventoryItem = $inventoryItems[0]
 # The full ARM ID of the inventory item - passed to 'vm create' as --inventory-item.
 $inventoryItemId = $inventoryItem.id
 
+if ($inventoryItemId -notmatch "^$([regex]::Escape($VCenterId.TrimEnd('/')))/InventoryItems/[^/]+$") {
+    throw "The selected item does not have a valid inventory ID under the requested vCenter: '$inventoryItemId'."
+}
+
 # The pointer we are trying to clear - the ARM ID the inventory item is linked to.
 $managedResourceId = $inventoryItem.managedResourceId
 
@@ -233,7 +240,7 @@ $machineSubscriptionId = [regex]::Match($managedResourceId, '(?i)/subscriptions/
 $machineResourceGroup = [regex]::Match($managedResourceId, '(?i)/resourceGroups/([^/]+)').Groups[1].Value
 
 # Pull the HCRP machine name out of the stale ID - the recreated Arc VM resources must reuse this exact name.
-$machineName = [regex]::Match($managedResourceId, '(?i)/machines/([^/]+)').Groups[1].Value
+$machineName = [regex]::Match($managedResourceId, '(?i)/providers/Microsoft\.HybridCompute/machines/([^/]+)').Groups[1].Value
 
 # If any of the three could not be parsed, the ID is not in a shape this script understands.
 if (-not $machineSubscriptionId -or -not $machineResourceGroup -or -not $machineName) { throw "Could not parse subscription/resource group/machine name from managedResourceId: $managedResourceId" }
@@ -319,15 +326,18 @@ Write-Host "Expected kind      : $expectedMachineKind or empty"
 # Step 2.1. Check whether the virtualMachineInstance ('default') exists.
 # ---------------------------------------------------------------------------
 
+$vmShowArgs = @(
+    "connectedvmware", "vm", "show"
+    "--resource-group", $machineResourceGroup
+    "--name", $machineName
+    "--subscription", $machineSubscriptionId
+)
+
 # Only bother checking the child resource if the parent machine actually exists.
 if ($machineExists) {
     # 'vm show' reads the virtualMachineInstance under the HCRP machine; a not-found means it is missing.
-    $vmInstanceExists = Test-AzResourceExists -AzArgs @(
-        "connectedvmware", "vm", "show"
-        "--resource-group", $machineResourceGroup
-        "--name", $machineName
-        "--subscription", $machineSubscriptionId
-    ) -Description "Reading virtualMachineInstance for machine '$machineName'"
+    $vmInstanceExists = Test-AzResourceExists -AzArgs $vmShowArgs `
+        -Description "Reading virtualMachineInstance for machine '$machineName'"
 } else {
     # If the machine is gone, its child resource cannot exist either.
     $vmInstanceExists = $false
@@ -335,6 +345,62 @@ if ($machineExists) {
 
 # Report the state of the child resource.
 Write-Host "VM instance exists : $vmInstanceExists"
+
+$replaceAssociation = $false
+if ($vmInstanceExists) {
+    $vmInstanceJson = Invoke-Az @vmShowArgs -o json
+    if ($LASTEXITCODE -ne 0) { throw "Failed to read the existing VMware association for '$machineName'." }
+    $vmInstance = $vmInstanceJson | ConvertFrom-Json
+    $existingInventoryId = $vmInstance.infrastructureProfile.inventoryItemId
+    $existingCustomLocationId = $vmInstance.extendedLocation.name
+    if ([string]::IsNullOrWhiteSpace($existingInventoryId) -or [string]::IsNullOrWhiteSpace($existingCustomLocationId)) {
+        throw "The existing VMware instance has no inventory or custom location ID. Cannot establish ownership; no resources were changed."
+    }
+
+    $replaceAssociation = $existingInventoryId -ine $inventoryItemId -or $existingCustomLocationId -ine $customLocationId
+    if ($replaceAssociation) {
+        Write-Host "`nThe Arc machine already has a different VMware association." -ForegroundColor Yellow
+        Write-Host "Arc machine        : $machineId"
+        Write-Host "Existing VM        : $($vmInstance.infrastructureProfile.moName)"
+        Write-Host "Existing inventory : $existingInventoryId"
+        Write-Host "Existing location  : $existingCustomLocationId"
+        Write-Host "Selected VM        : $($inventoryItem.moName)"
+        Write-Host "Selected inventory : $inventoryItemId"
+        Write-Host "Selected location  : $customLocationId"
+
+        # The list SDK can omit VM-specific fields. Read the exact inventory resource for its UUID.
+        $selectedInventoryJson = Invoke-Az resource show --ids $inventoryItemId --api-version "2023-12-01" -o json
+        if ($LASTEXITCODE -ne 0) { throw "Failed to read the selected VM's inventory identity. No resources were changed." }
+        $selectedInventory = $selectedInventoryJson | ConvertFrom-Json
+        if ($selectedInventory.id -ine $inventoryItemId -or $selectedInventory.kind -ine "VirtualMachine") {
+            throw "The selected inventory response does not identify the requested virtual machine. No resources were changed."
+        }
+
+        $replacementMachineJson = Invoke-Az connectedmachine show --ids $machineId -o json
+        if ($LASTEXITCODE -ne 0) { throw "Failed to read the Arc machine identity. No resources were changed." }
+        $replacementMachine = $replacementMachineJson | ConvertFrom-Json
+        if ($replacementMachine.id -ine $machineId -or [string]::IsNullOrWhiteSpace($replacementMachine.vmId) -or
+            [string]::IsNullOrWhiteSpace($replacementMachine.location)) {
+            throw "The Arc machine identity or location is missing. Cannot safely replace its VMware association."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($replacementMachine.kind) -and $replacementMachine.kind -ine $expectedMachineKind) {
+            throw "Arc machine kind '$($replacementMachine.kind)' does not match vCenter kind '$expectedMachineKind'. No resources were changed."
+        }
+
+        $inventoryUuid = [Guid]::Empty
+        $machineUuid = [Guid]::Empty
+        if (-not [Guid]::TryParse($selectedInventory.properties.smbiosUuid, [ref]$inventoryUuid) -or
+            -not [Guid]::TryParse($replacementMachine.vmUuid, [ref]$machineUuid) -or
+            $inventoryUuid -eq [Guid]::Empty -or $machineUuid -eq [Guid]::Empty) {
+            throw "A valid inventory SMBIOS UUID and Arc machine vmUuid are required to replace the association. No resources were changed."
+        }
+        # VMware and Hybrid Compute can report the first three UUID groups in opposite byte orders.
+        $alternateUuid = [Guid]::ParseExact((-join ($inventoryUuid.ToByteArray() | ForEach-Object { $_.ToString('x2') })), 'N')
+        if ($machineUuid -ne $inventoryUuid -and $machineUuid -ne $alternateUuid) {
+            throw "The selected VM's SMBIOS UUID does not match the Arc machine's vmUuid. No resources were changed."
+        }
+    }
+}
 
 if (-not $vmInstanceExists) {
     # Preserve an existing machine's immutable region; missing machines use the vCenter region.
@@ -346,6 +412,75 @@ if (-not $vmInstanceExists) {
 if ($CheckOnly) {
     # Remind the operator that no changes were made.
     Write-Host "`n-CheckOnly was specified - no resources were created or deleted." -ForegroundColor Yellow
+    return
+}
+
+if ($replaceAssociation) {
+    Write-Host "`nReplacement removes the old VMware instance and its VMware management association." -ForegroundColor Yellow
+    Write-Host "The Arc machine and on-premises VMs will be retained. The new association will be kept, not deleted." -ForegroundColor Yellow
+    $replaceConfirmation = Read-Host "Replace the existing association with the selected VM? (yes/y, default: no)"
+    if ($replaceConfirmation -notin @("yes", "y")) {
+        Write-Host "Keeping the existing association. No resources were created or deleted." -ForegroundColor Yellow
+        return
+    }
+
+    $currentInstanceJson = Invoke-Az @vmShowArgs -o json
+    if ($LASTEXITCODE -ne 0) { throw "Failed to re-check the existing association before replacement. No resources were changed." }
+    $currentInstance = $currentInstanceJson | ConvertFrom-Json
+    if ($currentInstance.infrastructureProfile.inventoryItemId -ine $existingInventoryId -or
+        $currentInstance.extendedLocation.name -ine $existingCustomLocationId) {
+        throw "The VMware association changed after it was inspected. Re-run the script to review it; no resources were changed."
+    }
+
+    Invoke-Az connectedvmware vm delete `
+        --resource-group $machineResourceGroup --name $machineName --subscription $machineSubscriptionId `
+        --retain-machine --yes -o none
+    if ($LASTEXITCODE -ne 0) { throw "Failed to remove the old VMware instance. Replacement stopped; the Arc machine was not requested for deletion." }
+    if (Test-AzResourceExists -AzArgs $vmShowArgs -Description "Verifying removal of the old VMware instance") {
+        throw "The old VMware instance still exists. Replacement stopped before creating another association."
+    }
+
+    $retainedMachineJson = Invoke-Az connectedmachine show --ids $machineId -o json
+    if ($LASTEXITCODE -ne 0) { throw "Cannot verify the retained Arc machine after instance deletion. Replacement stopped before creation." }
+    $retainedMachine = $retainedMachineJson | ConvertFrom-Json
+    if ($retainedMachine.id -ine $machineId -or $retainedMachine.vmId -ine $replacementMachine.vmId -or
+        $retainedMachine.vmUuid -ine $replacementMachine.vmUuid) {
+        throw "The Arc machine identity changed during replacement. Stopped before creation; investigate the machine before retrying."
+    }
+
+    Invoke-Az connectedvmware vm create --machine-id $machineId --inventory-item $inventoryItemId `
+        --location $replacementMachine.location -o none
+    if ($LASTEXITCODE -ne 0) {
+        throw "The old VMware instance was removed, but creation of the replacement failed. The Arc machine was retained; no further cleanup was attempted."
+    }
+
+    $repairedInstanceJson = Invoke-Az @vmShowArgs -o json
+    if ($LASTEXITCODE -ne 0) { throw "Replacement returned, but reading the new VMware instance failed. No cleanup was attempted." }
+    $repairedInstance = $repairedInstanceJson | ConvertFrom-Json
+    $expectedInstanceId = "$machineId/providers/Microsoft.ConnectedVMwarevSphere/virtualMachineInstances/default"
+    if ($repairedInstance.id -ine $expectedInstanceId -or
+        $repairedInstance.infrastructureProfile.inventoryItemId -ine $inventoryItemId -or
+        $repairedInstance.extendedLocation.name -ine $customLocationId -or
+        $repairedInstance.provisioningState -ine "Succeeded") {
+        throw "The replacement instance is not successfully associated with the selected inventory and custom location. No cleanup was attempted."
+    }
+
+    $repairedInventoryJson = Invoke-Az resource show --ids $inventoryItemId --api-version "2023-12-01" -o json
+    if ($LASTEXITCODE -ne 0) { throw "Replacement returned, but verifying the exact inventory item failed. No cleanup was attempted." }
+    $repairedInventory = $repairedInventoryJson | ConvertFrom-Json
+    if ($repairedInventory.id -ine $inventoryItemId -or $repairedInventory.properties.managedResourceId -ine $expectedInstanceId) {
+        throw "The selected inventory item does not point back to the replacement VMware instance. No cleanup was attempted."
+    }
+
+    $verifiedMachineJson = Invoke-Az connectedmachine show --ids $machineId -o json
+    if ($LASTEXITCODE -ne 0) { throw "Replacement returned, but verifying the retained Arc machine failed. No cleanup was attempted." }
+    $verifiedMachine = $verifiedMachineJson | ConvertFrom-Json
+    if ($verifiedMachine.id -ine $machineId -or $verifiedMachine.vmId -ine $replacementMachine.vmId -or
+        $verifiedMachine.vmUuid -ine $replacementMachine.vmUuid) {
+        throw "The Arc machine identity was not preserved. No cleanup was attempted; investigate before retrying."
+    }
+
+    Write-Host "SUCCESS: VMware association replaced and reciprocal inventory link verified. The Arc machine and repaired association were retained." -ForegroundColor Green
     return
 }
 
